@@ -4,7 +4,13 @@ TOKEN = os.environ.get("TOKEN")
 if not TOKEN:
     raise RuntimeError("TOKEN environment variable is not set.")
 
-LOGO_URL       = "https://i.ibb.co/WWbL1v1k/7391989548e4747ad18756fa467b74da.webp"
+# Logo officiel. Le lien direct i.ibb.co est parfois bloqué par le proxy CDN de
+# Discord ; on passe donc par le proxy Discord (lien fourni par l'admin) qui est
+# toujours servi correctement dans les components v2.
+LOGO_URL = (
+    "https://images-ext-1.discordapp.net/external/e4WlQv_PVwjehWD8UEKkHFqqNetKn47kVgVqiq7qCOU/"
+    "https/i.ibb.co/WWbL1v1k/7391989548e4747ad18756fa467b74da.webp?format=webp"
+)
 DISCORD_INVITE = "https://discord.gg/pnJhKuU2QK"
 INSTAGRAM_URL  = "https://www.instagram.com/maxlananas.builds/"
 WEBSITE_URL    = "https://maxlananas.is-a.dev/"
@@ -38,25 +44,25 @@ REVIEW_TAG_FEATURED   = 1540786829740212376
 # Un rôle de palier tous les 5 niveaux (5 → 100). Les IDs à 0 sont des rôles
 # à créer : la commande /levelroles-setup les crée et mémorise leurs IDs en DB.
 LEVEL_ROLES: dict[int, int] = {
-    5:   0,
+    5:   1545627787082076210,
     10:  1525609032499466270,
-    15:  0,
+    15:  1545627901888692254,
     20:  1525609413556174970,
-    25:  0,
+    25:  1545628018934939688,
     30:  1525609578379608074,
-    35:  0,
+    35:  1545628133233786940,
     40:  1525611768507007127,
-    45:  0,
+    45:  1545628203023073290,
     50:  1525611938283913267,
-    55:  0,
+    55:  1545628355142090852,
     60:  1525612127421726791,
-    65:  0,
+    65:  1545628431193088000,
     70:  1525612488916467712,
-    75:  0,
+    75:  1545628529205706823,
     80:  1525612683854876713,
-    85:  0,
+    85:  1545628648441126922,
     90:  1525613027918090350,
-    95:  0,
+    95:  1545628815173222460,
     100: 1525613203990773830,
 }
 

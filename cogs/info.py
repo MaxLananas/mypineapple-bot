@@ -415,24 +415,23 @@ class Info(commands.Cog):
         })
         await interaction.delete_original_response()
 
-    @app_commands.command(name="emojis", description="Export all custom server emojis.")
+    @app_commands.command(name="emojis", description="List all custom server emojis.")
     @app_commands.checks.has_permissions(administrator=True)
     async def emojis_cmd(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        emojis = guild.emojis
+        emojis = sorted(interaction.guild.emojis, key=lambda x: x.name)
         if not emojis:
             await interaction.followup.send("No custom emojis on this server.", ephemeral=True)
             return
 
-        lines = []
-        for e in sorted(emojis, key=lambda x: x.name):
-            lines.append(f"{e} `\\<:{e.name}:{e.id}>`  →  `:{e.name}:`")
-        content = "## 🎨 Custom Emojis\n" + "\n".join(lines)
-        # Trunque si trop long.
-        if len(content) > 1900:
-            content = content[:1900] + "\n…"
-        await interaction.followup.send(content, ephemeral=True)
+        lines = [f"{e} `<:{e.name}:{e.id}>`  `:{e.name}:`" for e in emojis]
+
+        # Pagination : 15 lignes par page, toutes envoyées en éphémère.
+        per_page = 15
+        pages = [lines[i:i + per_page] for i in range(0, len(lines), per_page)]
+        for idx, page in enumerate(pages, 1):
+            content = f"## 🎨 Custom Emojis — {idx}/{len(pages)}\n" + "\n".join(page)
+            await interaction.followup.send(content, ephemeral=True)
 
     @app_commands.command(name="leaderboard", description="Show the top 10 members by level.")
     async def leaderboard(self, interaction: discord.Interaction):

@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 
 import utils.db as db
 from utils.api import api_send
+from utils.helpers import ts_now
 from utils.leveling import add_xp, sync_level_roles, bump_stat
 from config import (
     NO_XP_CHANNEL_ID,
@@ -102,16 +103,19 @@ class Leveling(commands.Cog):
 
     @tasks.loop(seconds=VOICE_XP_INTERVAL)
     async def voice_xp_loop(self):
-        for guild in self.bot.guilds:
-            afk_id = guild.afk_channel.id if guild.afk_channel else None
-            for vc in guild.voice_channels:
-                if vc.id == afk_id:
-                    continue
-                for member in vc.members:
-                    if member.bot:
+        try:
+            for guild in self.bot.guilds:
+                afk_id = guild.afk_channel.id if guild.afk_channel else None
+                for vc in guild.voice_channels:
+                    if vc.id == afk_id:
                         continue
-                    bump_stat(guild, member, "voice_seconds", VOICE_XP_INTERVAL)
-                    await add_xp(guild=guild, member=member, amount=VOICE_XP_AMOUNT)
+                    for member in vc.members:
+                        if member.bot:
+                            continue
+                        bump_stat(guild, member, "voice_seconds", VOICE_XP_INTERVAL)
+                        await add_xp(guild=guild, member=member, amount=VOICE_XP_AMOUNT)
+        except Exception as e:
+            log.error("voice_xp_loop: %s", e)
 
     @voice_xp_loop.before_loop
     async def _before_voice_loop(self):
@@ -186,6 +190,62 @@ class Leveling(commands.Cog):
             ],
         })
         await interaction.delete_original_response()
+
+    @app_commands.command(name="reward", description="Grant an XP reward to a member.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(member="Member to reward.", amount="XP amount.", reason="Reason (optional).")
+    async def reward(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        amount: app_commands.Range[int, 1, 100000],
+        reason: str = "Reward",
+    ):
+        await interaction.response.defer(ephemeral=True)
+        result = await add_xp(
+            guild=interaction.guild,
+            member=member,
+            amount=amount,
+            channel=interaction.channel,
+        )
+        ts = ts_now()
+        # Carte de récompense publique + confirmation éphémère.
+        await api_send(interaction.channel.id, {
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "accent_color": 0xFFD700,
+                    "components": [
+                        {
+                            "type": 9,
+                            "components": [
+                                {
+                                    "type": 10,
+                                    "content": (
+                                        f"## 🎁 Reward Granted\n"
+                                        f"{member.mention} received **+{amount} XP**."
+                                    ),
+                                }
+                            ],
+                            "accessory": {"type": 11, "media": {"url": str(member.display_avatar.url)}},
+                        },
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {
+                            "type": 10,
+                            "content": (
+                                f"**By** {interaction.user.mention}\n"
+                                f"**Reason** {reason}\n"
+                                f"**At** <t:{ts}:F>"
+                            ),
+                        },
+                    ],
+                }
+            ],
+        })
+        await interaction.followup.send(
+            f"✅ Granted `{amount}` XP to {member.mention}.", ephemeral=True
+        )
 
     @app_commands.command(name="xp-reset", description="Reset a member's XP and level.")
     @app_commands.checks.has_permissions(administrator=True)

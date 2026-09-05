@@ -178,7 +178,10 @@ class Fun(commands.Cog):
 
     @tasks.loop(seconds=15)
     async def giveaway_loop(self):
-        await self._draw_finished_giveaways()
+        try:
+            await self._draw_finished_giveaways()
+        except Exception as e:
+            log.error("giveaway_loop: %s", e)
 
     @giveaway_loop.before_loop
     async def _before_giveaway_loop(self):

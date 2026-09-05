@@ -4,6 +4,8 @@ import logging
 import logging.handlers
 import os
 import sys
+import traceback
+
 import discord
 from discord.ext import commands
 
@@ -68,7 +70,17 @@ async def on_app_command_error(
         msg = "❌ I don't have the required permissions."
     elif isinstance(error, discord.app_commands.CommandOnCooldown):
         msg = f"⏳ Wait **{error.retry_after:.1f}s** before using this again."
-    log.error("AppCommandError [%s]: %s", interaction.command, error)
+
+    # Log complet (traceback) pour le diagnostic — indispensable en prod.
+    if isinstance(error, discord.app_commands.CommandInvokeError):
+        log.error(
+            "AppCommandError [%s]:\n%s",
+            interaction.command,
+            "".join(traceback.format_exception(type(error.original), error.original, error.original.__traceback__)),
+        )
+    else:
+        log.error("AppCommandError [%s]: %s", interaction.command, error)
+
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
@@ -76,6 +88,12 @@ async def on_app_command_error(
             await interaction.response.send_message(msg, ephemeral=True)
     except Exception:
         pass
+
+
+@bot.event
+async def on_error(event: str, *args, **kwargs):
+    # Capture les exceptions non gérées des événements (listeners) sans crash.
+    log.error("Unhandled event error in '%s':\n%s", event, traceback.format_exc())
 
 
 async def main() -> None:
