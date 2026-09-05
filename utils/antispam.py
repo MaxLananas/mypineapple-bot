@@ -36,9 +36,9 @@ _RAPID_THRESHOLD     = 6
 _RAPID_WINDOW        = 3.0
 
 _history: dict[int, deque] = defaultdict(lambda: deque(maxlen=12))
-_offenses: dict[int, int] = {}
 
 _NORMALIZE_RE = re.compile(r"\s+")
+_MAX_TRACKED_USERS = 2000  # bound memory: drop the oldest idle users past this
 
 
 def _normalize(text: str) -> str:
@@ -56,6 +56,12 @@ async def process_message(message: discord.Message) -> bool:
 
     hist = _history[uid]
     hist.append((now, content))
+
+    # Bound the per-user history map (avoids unbounded growth on big servers).
+    if len(_history) > _MAX_TRACKED_USERS:
+        for key in list(_history)[:_MAX_TRACKED_USERS // 2]:
+            if key != uid:
+                _history.pop(key, None)
 
     recent = [(t, c) for t, c in hist if now - t <= max(_IDENTICAL_WINDOW, _RAPID_WINDOW)]
 
@@ -76,17 +82,29 @@ async def process_message(message: discord.Message) -> bool:
     return False
 
 
+_OFFENSE_DECAY = 24 * 3600  # reset the counter after 24h of good behaviour
+
+
 def _offense_of(uid: int) -> int:
     # Persist offense counts so they survive restarts.
     data = db.config()
     counts = data.setdefault("antispam_offenses", {})
-    return int(counts.get(str(uid), 0))
+    rec = counts.get(str(uid), 0)
+    # Legacy schema: plain int (no timestamp).
+    if isinstance(rec, int):
+        return rec
+    if isinstance(rec, dict):
+        last = rec.get("at", 0)
+        if time.time() - last > _OFFENSE_DECAY:
+            return 0  # decayed
+        return int(rec.get("count", 0))
+    return 0
 
 
 def _set_offense(uid: int, n: int) -> None:
     data = db.config()
     counts = data.setdefault("antispam_offenses", {})
-    counts[str(uid)] = n
+    counts[str(uid)] = {"count": n, "at": time.time()}
     db.save_config(data)
 
 
@@ -122,7 +140,7 @@ async def _escalate(member: discord.Member) -> None:
     log.info("Anti-spam: muted %s for %ss (offense %d)", member, duration, offense)
 
     # Auto-remove the muted role when the timeout expires.
-    asyncio.get_event_loop().create_task(_release_after(member, muted_role, warn_role, duration))
+    asyncio.create_task(_release_after(member, muted_role, warn_role, duration))
 
 
 async def _release_after(member, muted_role, warn_role, duration):

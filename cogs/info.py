@@ -411,12 +411,31 @@ class Info(commands.Cog):
 
         lines = [f"{e} `<:{e.name}:{e.id}>`  `:{e.name}:`" for e in emojis]
 
-        # Pagination : 15 lignes par page, toutes envoyées en éphémère.
-        per_page = 15
-        pages = [lines[i:i + per_page] for i in range(0, len(lines), per_page)]
-        for idx, page in enumerate(pages, 1):
-            content = f"## 🎨 Custom Emojis — {idx}/{len(pages)}\n" + "\n".join(page)
-            await interaction.followup.send(content, ephemeral=True)
+        # Single styled V2 card (chunked to stay under Discord's limits).
+        per_chunk = 30
+        chunks = ["\n".join(lines[i:i + per_chunk]) for i in range(0, len(lines), per_chunk)]
+        for idx, chunk in enumerate(chunks, 1):
+            await api_send(interaction.channel.id, {
+                "flags": 32768,
+                "components": [
+                    {
+                        "type": 17,
+                        "accent_color": 0xA8D8EA,
+                        "components": [
+                            {
+                                "type": 10,
+                                "content": (
+                                    f"## 🎨 Custom Emojis — {idx}/{len(chunks)}\n"
+                                    f"`{len(emojis)}` emoji(s) total\n"
+                                ),
+                            },
+                            {"type": 14, "divider": True, "spacing": 1},
+                            {"type": 10, "content": chunk},
+                        ],
+                    }
+                ],
+            })
+        await interaction.delete_original_response()
 
     @app_commands.command(name="leaderboard", description="Show the top 10 members by level.")
     async def leaderboard(self, interaction: discord.Interaction):

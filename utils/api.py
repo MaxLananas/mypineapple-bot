@@ -8,11 +8,16 @@ Provides:
 """
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import time
 import aiohttp
 
 log = logging.getLogger(__name__)
+
+
+def _json_dumps(v) -> str:
+    return json.dumps(v, ensure_ascii=False)
 
 _session: aiohttp.ClientSession | None = None
 
@@ -126,12 +131,9 @@ def get_session() -> aiohttp.ClientSession:
 
 async def init_session(token: str) -> None:
     global _session
-    _session = aiohttp.ClientSession(
-        headers={
-            "Authorization": f"Bot {token}",
-            "Content-Type":  "application/json",
-        }
-    )
+    # NOTE: no global Content-Type header — aiohttp sets it per-request
+    # (application/json for `json=`, multipart/form-data for FormData uploads).
+    _session = aiohttp.ClientSession(headers={"Authorization": f"Bot {token}"})
     log.info("aiohttp session initialized.")
 
 
@@ -205,18 +207,21 @@ async def api_send_file(
     data: bytes,
     content_type: str = "application/octet-stream",
     content: str | None = None,
+    allowed_mentions: dict | None = None,
 ) -> tuple[int, dict]:
-    """Upload a file (e.g. a generated rank card) to a channel."""
-    session = get_session()
+    """Upload a file (e.g. a generated rank card) to a channel.
+
+    Uses the same throttle/backoff path as ``api_send`` so a 429 or 5xx never
+    silently drops the upload.
+    """
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-    form = aiohttp.FormData()
+    payload_json = {
+        "allowed_mentions": allowed_mentions if allowed_mentions is not None else NO_MENTIONS,
+    }
     if content:
-        form.add_field("payload_json", content, content_type="application/json")
+        payload_json["content"] = content
+
+    form = aiohttp.FormData()
+    form.add_field("payload_json", _json_dumps(payload_json), content_type="application/json")
     form.add_field("files[0]", data, filename=filename, content_type=content_type)
-    await _throttle()
-    async with session.post(url, data=form) as r:
-        try:
-            resp = await r.json()
-        except Exception:
-            resp = {}
-        return r.status, resp
+    return await _request_with_backoff("POST", url, data=form)

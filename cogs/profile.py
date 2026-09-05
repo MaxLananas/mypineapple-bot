@@ -8,8 +8,8 @@ from discord import app_commands
 from discord.ext import commands
 
 import utils.db as db
-from utils.api import api_send, get_session
-from utils.helpers import xp_for_level, progress_bar, ts_now
+from utils.api import api_send, _request_with_backoff
+from utils.helpers import xp_needed, progress_bar, ts_now, MAX_LEVEL
 from utils.leveling import add_xp, level_roles, level_role_name
 from config import (
     LOGO_URL,
@@ -63,7 +63,6 @@ async def _create_forum_thread_via_rest(
     components:    list[dict],
     auto_archive:  int = 10080,
 ) -> dict:
-    session = get_session()
     url     = f"https://discord.com/api/v10/channels/{forum_id}/threads"
     payload = {
         "name":                  thread_name,
@@ -74,14 +73,10 @@ async def _create_forum_thread_via_rest(
             "components": components,
         },
     }
-    async with session.post(url, json=payload) as r:
-        try:
-            data = await r.json()
-        except Exception:
-            data = {}
-        if r.status not in (200, 201):
-            log.warning("create_forum_thread → %s %s", r.status, data)
-        return data
+    status, data = await _request_with_backoff("POST", url, json=payload)
+    if status not in (200, 201):
+        log.warning("create_forum_thread → %s %s", status, data)
+    return data
 
 
 async def _post_review_to_forum(
@@ -447,9 +442,10 @@ class Profile(commands.Cog):
         ud     = data.get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
         level  = ud["level"]
         xp     = ud["xp"]
-        needed = xp_for_level(level)
+        is_max = level >= MAX_LEVEL
+        needed = xp_needed(level)
         bar    = progress_bar(xp, needed)
-        pct    = int((xp / needed) * 100) if needed else 0
+        pct    = 100 if is_max else (int((xp / needed) * 100) if needed else 0)
 
         all_u   = data.get(guild_id, {})
         sorted_ = sorted(all_u.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)

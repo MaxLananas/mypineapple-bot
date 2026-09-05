@@ -49,6 +49,11 @@ class Leveling(commands.Cog):
         now = time.time()
         uid = message.author.id
 
+        # Bound the anti-spam message history map (avoids unbounded growth).
+        if len(_recent_messages) > 5000:
+            for k in list(_recent_messages)[:2500]:
+                _recent_messages.pop(k, None)
+
         # ── Anti-spam copier-coller ──────────────────────────────────────────
         recent = _recent_messages[uid]
         content = message.content.strip()
@@ -89,6 +94,10 @@ class Leveling(commands.Cog):
         if now - _reaction_cooldowns.get(user.id, 0) < REACTION_XP_COOLDOWN:
             return
         _reaction_cooldowns[user.id] = now
+        # Bound the cache (avoids unbounded growth over time).
+        if len(_reaction_cooldowns) > 5000:
+            for k in [k for k, v in _reaction_cooldowns.items() if now - v > 3600]:
+                _reaction_cooldowns.pop(k, None)
 
         member = reaction.message.guild.get_member(user.id)
         if member is None:

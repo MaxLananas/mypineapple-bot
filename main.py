@@ -178,7 +178,8 @@ def _install_signal_handlers() -> None:
             loop.add_signal_handler(sig, _request_shutdown, sig.name)
         except (NotImplementedError, RuntimeError):
             # Fallback for platforms without loop.add_signal_handler.
-            signal.signal(sig, lambda *_: _request_shutdown(sig.name))
+            # Bind signame as a default arg so it isn't captured late.
+            signal.signal(sig, lambda *_a, _n=sig.name: _request_shutdown(_n))
 
 
 async def main() -> None:

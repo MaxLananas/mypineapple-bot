@@ -364,6 +364,10 @@ class Logs(commands.Cog):
                 )
 
             _user_meta_cache[after.id] = {"banner": banner, "bio": bio, "accent": accent}
+            # Bound the cache (one small entry per tracked user).
+            if len(_user_meta_cache) > 5000:
+                for k in list(_user_meta_cache)[:2500]:
+                    _user_meta_cache.pop(k, None)
             break
 
     # ── Statuts / activités (anti-spam) ─────────────────────────────────────
@@ -377,6 +381,10 @@ class Logs(commands.Cog):
         now = time.time()
         if now - _presence_cooldown.get(after.id, 0) < PRESENCE_LOG_COOLDOWN:
             return
+        # Bound the presence-cooldown map.
+        if len(_presence_cooldown) > 5000:
+            for k in [k for k, v in _presence_cooldown.items() if now - v > PRESENCE_LOG_COOLDOWN * 4]:
+                _presence_cooldown.pop(k, None)
 
         before_custom = next(
             (a.state for a in before.activities if a.type == discord.ActivityType.custom),

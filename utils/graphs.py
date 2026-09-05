@@ -1,62 +1,86 @@
-"""Matplotlib-based charts (XP history over the last 7 days)."""
+"""7-day XP bar chart rendered with Pillow (no numpy/matplotlib).
+
+Matplotlib pulls in numpy (~100 MB+ of resident memory) which is risky on a
+256 MB host; this module draws an equally polished, theme-matched chart with
+pure Pillow and the bundled DejaVu fonts.
+"""
 from __future__ import annotations
 
 import io
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
-import matplotlib
+from PIL import Image, ImageDraw
 
-matplotlib.use("Agg")  # headless rendering
-import matplotlib.pyplot as plt  # noqa: E402
-import matplotlib.dates as mdates  # noqa: E402
+from utils.images import _font, _vgradient, _rounded_mask
 
 log = logging.getLogger(__name__)
 
-_PALETTE = ["#5ECFFF", "#FFD166", "#8DA1AD", "#B8A0D0", "#C8F0C8", "#FFB3BA", "#A0D8EF"]
+W, H = 1000, 300
+_PALETTE = [
+    "#5ECFFF", "#FFD166", "#8DA1AD", "#B8A0D0",
+    "#C8F0C8", "#FFB3BA", "#A0D8EF",
+]
 
 
-def _clean_axes(ax) -> None:
-    for side in ("top", "right", "left"):
-        ax.spines[side].set_visible(False)
-    ax.spines["bottom"].set_color("#1e293b")
-    ax.tick_params(colors="#64748b", labelsize=9)
-    ax.grid(axis="y", color="#1e293b", linewidth=0.7)
-    ax.set_axisbelow(True)
+def _hex(c: str) -> tuple:
+    c = c.lstrip("#")
+    return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def generate_xp_graph(
-    *,
-    username: str,
-    daily_xp: dict[str, int],
-    days: int = 7,
-) -> bytes:
-    """Render a 7-day XP bar/line chart and return PNG bytes.
-
-    ``daily_xp`` maps ISO dates (``YYYY-MM-DD``) to XP earned that day.
-    """
+def generate_xp_graph(*, username: str, daily_xp: dict[str, int], days: int = 7) -> bytes:
+    """Render a 7-day XP bar chart and return PNG bytes."""
     today = datetime.now(timezone.utc).date()
     dates = [today - timedelta(days=d) for d in range(days - 1, -1, -1)]
-    labels = [d.strftime("%Y-%m-%d") for d in dates]
-    values = [int(daily_xp.get(lbl, 0)) for lbl in labels]
+    values = [int(daily_xp.get(d.strftime("%Y-%m-%d"), 0)) for d in dates]
+    max_v = max(values) if any(values) else 1
 
-    fig, ax = plt.subplots(figsize=(6.6, 2.6), dpi=140)
-    fig.patch.set_facecolor("#0f172a")
-    ax.set_facecolor("#0f172a")
+    # Background (ocean gradient).
+    img = _vgradient(W, H, (15, 23, 42), (18, 54, 78)).convert("RGBA")
+    draw = ImageDraw.Draw(img)
 
-    colors = [_PALETTE[i % len(_PALETTE)] for i in range(days)]
-    ax.bar(range(days), values, color=colors, width=0.62, zorder=3)
-    ax.set_xticks(range(days))
-    ax.set_xticklabels([d.strftime("%a") for d in dates])
-    _clean_axes(ax)
+    # Title.
+    title_font = _font(26, bold=True)
+    title = f"XP — {username} (last {days} days)"
+    draw.text((32, 24), title, font=title_font, fill=(226, 232, 240))
 
-    ax.set_title(f"XP — {username} (last {days} days)", color="#e2e8f0", fontsize=11, pad=10)
+    # Chart area.
+    left, top, right, bottom = 60, 90, W - 40, H - 40
+    plot_h = bottom - top
+    draw.line((left, bottom, right, bottom), fill=(30, 41, 59), width=2)
+
+    # Bars.
+    n = len(values)
+    slot = (right - left) / n
+    bar_w = int(slot * 0.55)
     for i, v in enumerate(values):
-        if v:
-            ax.text(i, v + max(values) * 0.02, str(v), ha="center", color="#cbd5e1", fontsize=8)
+        color = _hex(_PALETTE[i % len(_PALETTE)])
+        bh = int((v / max_v) * (plot_h - 34)) if v else 3
+        x0 = int(left + slot * i + (slot - bar_w) / 2)
+        y0 = bottom - bh
+        x1, y1 = x0 + bar_w, bottom
+        radius = min(12, bar_w // 2, bh // 2)
+        if radius <= 0:
+            draw.rectangle((x0, y0, x1, y1), fill=color)
+        else:
+            # Rounded-top bar (rounded rectangle, then square off the bottom).
+            draw.rounded_rectangle((x0, y0, x1, y1), radius=radius, fill=color)
+            draw.rectangle((x0, y0 + radius, x1, y1), fill=color)
 
-    plt.tight_layout()
+        # Day label.
+        day_font = _font(15)
+        lbl = dates[i].strftime("%a")
+        lw = draw.textlength(lbl, font=day_font)
+        draw.text((x0 + (bar_w - lw) / 2, bottom + 8), lbl, font=day_font, fill=(100, 116, 139))
+
+        # Value label above bar.
+        if v:
+            val_font = _font(15, bold=True)
+            vtxt = str(v)
+            vw = draw.textlength(vtxt, font=val_font)
+            draw.text((x0 + (bar_w - vw) / 2, y0 - 22), vtxt, font=val_font, fill=(203, 213, 225))
+
     buf = io.BytesIO()
-    fig.savefig(buf, format="PNG", facecolor=fig.get_facecolor())
-    plt.close(fig)
+    img.convert("RGB").save(buf, "PNG", optimize=True)
     return buf.getvalue()
