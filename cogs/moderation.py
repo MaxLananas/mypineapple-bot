@@ -422,22 +422,37 @@ class Moderation(commands.Cog):
 
     @app_commands.command(name="purge", description="Delete messages in bulk.")
     @app_commands.checks.has_permissions(manage_messages=True)
-    @app_commands.describe(amount="Number of messages (1–100).")
-    async def purge(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+    @app_commands.describe(
+        amount="Number of messages (1–100).",
+        member="Only delete messages from this member.",
+        keyword="Only delete messages containing this keyword.",
+    )
+    async def purge(
+        self,
+        interaction: discord.Interaction,
+        amount: app_commands.Range[int, 1, 100],
+        member: discord.Member | None = None,
+        keyword: str | None = None,
+    ):
         await interaction.response.defer(ephemeral=True)
 
-        def check(m: discord.Message) -> bool:
-            # Garde les messages épinglés.
-            return not m.pinned
+        kw = keyword.lower() if keyword else None
 
-        # Discord refuse de supprimer les messages de plus de 14 jours en bulk.
+        def check(m: discord.Message) -> bool:
+            if m.pinned:  # Garde les messages épinglés.
+                return False
+            if member is not None and m.author.id != member.id:
+                return False
+            if kw is not None and kw not in m.content.lower():
+                return False
+            return True
+
         cutoff = datetime.now(timezone.utc) - timedelta(days=14)
         old_count = 0
 
         try:
             deleted = await interaction.channel.purge(limit=amount, check=check)
         except discord.HTTPException:
-            # Fallback : suppression un par un pour contourner la limite 14 jours.
             deleted = []
             async for m in interaction.channel.history(limit=amount):
                 if check(m):

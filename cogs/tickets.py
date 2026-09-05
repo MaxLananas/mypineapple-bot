@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import html
 import logging
 from datetime import datetime, timezone
 from io import StringIO
@@ -11,6 +12,7 @@ from discord.ext import commands
 import utils.db as db
 from utils.api import api_send
 from utils.helpers import ts_now, safe_add_role
+from utils.emojis import E
 from config import (
     LOGO_URL,
     TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID, SUPPORT_ROLE_ID,
@@ -19,9 +21,26 @@ from config import (
 
 log = logging.getLogger(__name__)
 
+_bot: commands.Bot | None = None  # référencé pour enregistrer les vues persistantes
+
 
 def _is_valid_url(url: str) -> bool:
     return url.startswith("http://") or url.startswith("https://")
+
+
+TICKET_CLOSE_REASONS = {
+    "resolved":  ("Résolu",    E.check,     0x57F287),
+    "abandoned": ("Abandonné", E.hourglass, 0xFEE75C),
+    "duplicate": ("Dupliqué",  E.file,      0xA8D8EA),
+}
+
+
+def _next_ticket_number() -> int:
+    cfg = db.config()
+    n = int(cfg.get("ticket_counter", 0)) + 1
+    cfg["ticket_counter"] = n
+    db.save_config(cfg)
+    return n
 
 
 TICKET_TYPES = {
@@ -64,6 +83,64 @@ TICKET_TYPES = {
 }
 
 
+def _build_overwrites(guild: discord.Guild, member: discord.Member) -> dict:
+    support_role = guild.get_role(SUPPORT_ROLE_ID)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        member: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            read_message_history=True, attach_files=True,
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            manage_channels=True, manage_messages=True,
+        ),
+    }
+    if support_role:
+        overwrites[support_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True,
+            read_message_history=True, manage_messages=True,
+        )
+    return overwrites
+
+
+def _is_image_url(url: str) -> bool:
+    low = url.lower()
+    return (
+        "cdn.discordapp.com/attachments" in low
+        or any(ext in low for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"))
+    )
+
+
+def _transcript_txt(logs: list[str]) -> str:
+    return "\n".join(logs)
+
+
+def _transcript_html(logs: list[str], title: str) -> str:
+    """Transcript HTML lisible, avec images intégrées."""
+    esc = html.escape
+    body_parts = [
+        "<html><head><meta charset='utf-8'>",
+        "<style>body{font-family:sans-serif;background:#0f172a;color:#e2e8f0;"
+        "padding:24px;max-width:800px;margin:auto}"
+        "h1{color:#38bdf8}.line{padding:6px 0;border-bottom:1px solid #1e293b;"
+        "font-family:monospace;white-space:pre-wrap}"
+        "img{max-width:100%;border-radius:8px;margin:8px 0}</style></head><body>",
+        f"<h1>{esc(title)}</h1>",
+    ]
+    for line in logs:
+        line_esc = esc(line)
+        # Détecte les URLs d'images et les intègre.
+        for token in line.split():
+            if _is_image_url(token):
+                line_esc = line_esc.replace(
+                    esc(token), f'<br><img src="{esc(token)}" alt="image"/>'
+                )
+        body_parts.append(f"<div class='line'>{line_esc}</div>")
+    body_parts.append("</body></html>")
+    return "\n".join(body_parts)
+
+
 class CloseTicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -75,47 +152,117 @@ class CloseTicketView(discord.ui.View):
         custom_id="close_ticket",
     )
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _do_close_ticket(interaction.channel, interaction.user, interaction)
+        # Demande le motif de fermeture avant de fermer.
+        view = CloseReasonView()
+        await interaction.response.send_message(
+            f"{E.question} Why are you closing this ticket?", view=view, ephemeral=True
+        )
+
+
+class CloseReasonView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.select(
+        placeholder="Select a close reason…",
+        options=[
+            discord.SelectOption(label="✅ Résolu",    value="resolved",  description="Issue resolved"),
+            discord.SelectOption(label="⏳ Abandonné", value="abandoned", description="User abandoned / no response"),
+            discord.SelectOption(label="📄 Dupliqué",  value="duplicate", description="Duplicate of another ticket"),
+        ],
+    )
+    async def reason_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        reason = select.values[0]
+        await interaction.response.defer(ephemeral=True)
+        await _do_close_ticket(interaction.channel, interaction.user, reason=reason)
+
+
+class ReopenView(discord.ui.View):
+    def __init__(self, number: int):
+        super().__init__(timeout=None)
+        self.number = number
+        btn = discord.ui.Button(
+            label="Reopen Ticket",
+            style=discord.ButtonStyle.success,
+            emoji="🔓",
+            custom_id=f"reopen_ticket_{number}",
+        )
+        btn.callback = self.reopen
+        self.add_item(btn)
+
+    async def reopen(self, interaction: discord.Interaction):
+        await _reopen_ticket(interaction, self.number)
 
 
 async def _do_close_ticket(
     channel:     discord.TextChannel,
     closed_by:   discord.Member,
     interaction: discord.Interaction | None = None,
+    *,
+    reason: str = "resolved",
 ):
     tickets = db.tickets()
     info    = tickets.get(str(channel.id), {})
     ts      = ts_now()
 
     logs = db.ticketlogs().get(str(channel.id), [])
-    transcript_file = None
-    if logs:
-        logs = list(logs) + [
-            "─" * 48,
-            "[TICKET CLOSED]",
-            f"Closed by : {closed_by} ({closed_by.id})",
-            f"Date      : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
-        ]
-        buf = StringIO("\n".join(logs))
-        transcript_file = discord.File(buf, filename=f"transcript-{channel.name}.txt")
+    closed_logs = list(logs) + [
+        "─" * 48,
+        "[TICKET CLOSED]",
+        f"Reason    : {reason}",
+        f"Closed by : {closed_by} ({closed_by.id})",
+        f"Date      : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+    ]
+
+    # Transcript HTML (avec images) + TXT.
+    html_file = discord.File(
+        StringIO(_transcript_html(closed_logs, f"Transcript — {channel.name}")),
+        filename=f"transcript-{channel.name}.html",
+    )
+    txt_file = discord.File(
+        StringIO(_transcript_txt(closed_logs)),
+        filename=f"transcript-{channel.name}.txt",
+    )
+
+    number = info.get("number")
+
+    # Enregistre le ticket fermé pour permettre la réouverture.
+    if number:
+        closed = db.closedtickets()
+        closed[str(number)] = {
+            "type":       info.get("type"),
+            "opener_id":  info.get("opener_id"),
+            "name":       channel.name,
+            "number":     number,
+            "closed_by":  closed_by.id,
+            "reason":     reason,
+            "closed_at":  datetime.now(timezone.utc).isoformat(),
+        }
+        db.save_closedtickets(closed)
+
+    reason_label, reason_emoji, reason_accent = TICKET_CLOSE_REASONS.get(
+        reason, ("Résolu", E.check, 0x57F287)
+    )
 
     log_ch = channel.guild.get_channel(TICKET_LOG_CHANNEL_ID)
     if log_ch and info:
-        await api_send(log_ch.id, {
+        status, resp = await api_send(log_ch.id, {
             "flags": 32768,
             "components": [
                 {
                     "type": 17,
-                    "accent_color": 0xED4245,
+                    "accent_color": reason_accent,
                     "components": [
                         {
                             "type": 10,
                             "content": (
-                                f"## Ticket Closed\n"
+                                f"## {reason_emoji} Ticket Closed\n"
                                 f"**Type** {info.get('type', '?').capitalize()}\n"
+                                f"**Number** `#{number}`\n"
                                 f"**Channel** `{channel.name}`\n"
                                 f"**Opened by** <@{info.get('opener_id')}>\n"
                                 f"**Closed by** {closed_by.mention}\n"
+                                f"**Reason** {reason_label}\n"
                                 f"**At** <t:{ts}:F>"
                             ),
                         }
@@ -123,13 +270,27 @@ async def _do_close_ticket(
                 }
             ],
         })
-        if transcript_file:
-            await log_ch.send(content=f"Transcript — `{channel.name}`", file=transcript_file)
+        # Envoie le transcript + le bouton de réouverture.
+        try:
+            if number:
+                view = ReopenView(number)
+                if _bot is not None:
+                    _bot.add_view(view)
+                await log_ch.send(
+                    content=f"Transcript — `{channel.name}`",
+                    files=[html_file, txt_file],
+                    view=view,
+                )
+        except Exception as e:
+            log.error("Transcript send: %s", e)
 
     if interaction:
-        await interaction.response.send_message("Closing in 5 seconds…")
+        await interaction.followup.send(f"{reason_emoji} Closing in 5 seconds…", ephemeral=True)
     else:
-        await channel.send("Closing in 5 seconds…")
+        try:
+            await channel.send(f"{reason_emoji} Closing in 5 seconds…")
+        except Exception:
+            pass
 
     await asyncio.sleep(5)
 
@@ -143,9 +304,73 @@ async def _do_close_ticket(
         db.save_ticketlogs(tlogs)
 
     try:
-        await channel.delete(reason=f"Closed by {closed_by}")
+        await channel.delete(reason=f"Closed by {closed_by} ({reason})")
     except Exception as e:
         log.error("Ticket delete: %s", e)
+
+
+async def _reopen_ticket(interaction: discord.Interaction, number: int):
+    closed = db.closedtickets()
+    info = closed.get(str(number))
+    if not info:
+        await interaction.response.send_message(
+            "This ticket can't be reopened.", ephemeral=True
+        )
+        return
+
+    guild = interaction.guild
+    opener_id = info.get("opener_id")
+    opener = guild.get_member(opener_id) or await guild.fetch_member(opener_id)
+
+    category = guild.get_channel(TICKET_CATEGORY_ID)
+    overwrites = _build_overwrites(guild, opener)
+
+    name = info.get("name") or f"{info.get('type', 'ticket')}-{number:04d}"
+    channel = await guild.create_text_channel(
+        name=name,
+        category=category,
+        overwrites=overwrites,
+        topic=f"{info.get('type')} | {opener} ({opener.id}) | reopened",
+    )
+
+    tickets = db.tickets()
+    tickets[str(channel.id)] = {
+        "type":       info.get("type"),
+        "opener_id":  opener.id,
+        "number":     number,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "name":       name,
+    }
+    db.save_tickets(tickets)
+
+    del closed[str(number)]
+    db.save_closedtickets(closed)
+
+    ts = ts_now()
+    await api_send(channel.id, {
+        "flags": 32768,
+        "components": [
+            {
+                "type": 17,
+                "accent_color": 0x57F287,
+                "components": [
+                    {
+                        "type": 10,
+                        "content": (
+                            f"## 🔓 Ticket Reopened\n"
+                            f"Ticket `#{number}` has been reopened.\n"
+                            f"**Opened by** {opener.mention}\n**At** <t:{ts}:F>"
+                        ),
+                    }
+                ],
+            }
+        ],
+    })
+    await channel.send(content=opener.mention, view=CloseTicketView())
+
+    await interaction.response.send_message(
+        f"{E.check} Ticket `#{number}` reopened in {channel.mention}.", ephemeral=True
+    )
 
 
 class CommissionModal(discord.ui.Modal, title="Commission Request"):
@@ -362,39 +587,23 @@ async def _create_ticket(
     support_role = guild.get_role(SUPPORT_ROLE_ID)
     type_info    = TICKET_TYPES[kind]
 
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        member: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            read_message_history=True, attach_files=True,
-        ),
-        guild.me: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            manage_channels=True, manage_messages=True,
-        ),
-    }
-    if support_role:
-        overwrites[support_role] = discord.PermissionOverwrite(
-            view_channel=True, send_messages=True,
-            read_message_history=True, manage_messages=True,
-        )
+    overwrites = _build_overwrites(guild, member)
 
-    # Nettoie le pseudo : minuscules, alphanum + tiret/underscore, max 18 chars.
-    safe = "".join(
-        c if c.isalnum() or c in ("-", "_") else "-"
-        for c in member.name.lower()
-    ).strip("-")[:18] or "user"
+    number = _next_ticket_number()
+    name   = f"{type_info['prefix']}-{number:04d}"
     channel = await guild.create_text_channel(
-        name=f"{type_info['prefix']}-{safe}",
+        name=name,
         category=category,
         overwrites=overwrites,
-        topic=f"{kind} | {member} ({member.id})",
+        topic=f"#{number} | {kind} | {member} ({member.id})",
     )
 
     tickets = db.tickets()
     tickets[str(channel.id)] = {
         "type":       kind,
         "opener_id":  member.id,
+        "number":     number,
+        "name":       name,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     db.save_tickets(tickets)
@@ -402,6 +611,7 @@ async def _create_ticket(
     tlogs = db.ticketlogs()
     tlogs[str(channel.id)] = [
         "[TICKET OPENED]",
+        f"Number  : #{number}",
         f"Type    : {kind}",
         f"User    : {member} ({member.id})",
         f"Channel : {channel.name} ({channel.id})",
@@ -431,7 +641,7 @@ async def _create_ticket(
         {"type": 14, "divider": True, "spacing": 1},
         {
             "type": 10,
-            "content": f"**Opened by** {member.mention}\n**Opened at** <t:{ts}:F>",
+            "content": f"**Ticket** `#{number}`\n**Opened by** {member.mention}\n**Opened at** <t:{ts}:F>",
         },
     ]
 
@@ -458,6 +668,7 @@ async def _create_ticket(
                             "type": 10,
                             "content": (
                                 f"## Ticket Opened\n"
+                                f"**Number** `#{number}`\n"
                                 f"**Type** {kind.capitalize()}\n"
                                 f"**Channel** {channel.mention}\n"
                                 f"**User** {member.mention} (`{member.id}`)\n"
@@ -474,8 +685,16 @@ async def _create_ticket(
 
 class Tickets(commands.Cog):
     def __init__(self, bot: commands.Bot):
+        global _bot
         self.bot = bot
+        _bot = bot
         bot.add_view(CloseTicketView())
+        # Ré-enregistre les boutons de réouverture des tickets fermés.
+        for number in db.closedtickets():
+            try:
+                bot.add_view(ReopenView(int(number)))
+            except ValueError:
+                pass
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

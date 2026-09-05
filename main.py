@@ -22,12 +22,14 @@ logging.basicConfig(
 )
 log = logging.getLogger("main")
 
-# Intents minimaux : on garde "members" (join/leave/update, welcome) et
-# "message_content" (transcripts, snipe, logs). "presences" est inutile ici
-# (aucun feature critique n'en dépend) et évite des événements gateway en trop.
+# Intents nécessaires :
+#  - members          → join/leave/update (welcome, auto-role, logs)
+#  - message_content  → transcripts, snipe, logs de messages
+#  - presences        → logs de statut custom / activité + compteur "online"
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.presences = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 COGS = [

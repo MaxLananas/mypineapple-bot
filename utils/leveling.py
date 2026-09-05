@@ -11,15 +11,29 @@ from utils.helpers import (
     safe_add_role,
     safe_remove_role,
 )
-from config import LEVEL_ROLES, LEVEL_ROLE_NAMES
+from config import (
+    LEVEL_ROLES,
+    LEVEL_ROLE_NAMES,
+    NO_XP_ROLE_ID,
+    BOOSTER_ROLE_ID,
+    BOOSTER_XP_MULTIPLIER,
+)
 
 log = logging.getLogger(__name__)
 
 MAX_LEVEL = 100
 
 
+def is_xp_disabled(member: discord.Member) -> bool:
+    """Vrai si le membre porte le rôle « muted XP »."""
+    return any(r.id == NO_XP_ROLE_ID for r in member.roles)
+
+
+def is_booster(member: discord.Member) -> bool:
+    return any(r.id == BOOSTER_ROLE_ID for r in member.roles)
+
+
 def milestone_roles_crossed(old_level: int, new_level: int) -> list[int]:
-    """Milestones franchis en passant de old_level à new_level (exclusif/ inclusif)."""
     return [l for l in sorted(LEVEL_ROLES) if old_level < l <= new_level]
 
 
@@ -28,8 +42,7 @@ async def sync_level_roles(
     member: discord.Member,
     level: int,
 ) -> None:
-    """Aligne les rôles palier sur le niveau réel :
-    ajoute les rôles ≤ level, retire ceux > level. Idempotent."""
+    """Aligne les rôles palier sur le niveau réel (ajoute ≤ level, retire > level)."""
     for milestone, role_id in LEVEL_ROLES.items():
         role = guild.get_role(role_id)
         if not role:
@@ -45,9 +58,17 @@ async def add_xp(
     member: discord.Member,
     amount: int,
     channel: discord.TextChannel | None = None,
+    *,
+    apply_booster: bool = True,
 ) -> tuple[int, int] | None:
-    """Ajoute de l'XP, gère les montées de niveau multiples, synchronise les
-    rôles et envoie le message de level-up. Retourne (old, new) si montée."""
+    """Ajoute de l'XP (avec bonus booster, ignore si rôle muted-XP), gère les
+    montées multi-niveaux, synchronise les rôles et envoie le message de level-up."""
+    if is_xp_disabled(member):
+        return None
+
+    if apply_booster and is_booster(member):
+        amount = int(amount * BOOSTER_XP_MULTIPLIER)
+
     data = db.levels()
     guild_id = str(guild.id)
     user_id = str(member.id)
@@ -64,6 +85,9 @@ async def add_xp(
     ud["level"] = new_level
     db.save_levels(data)
 
+    # Statistiques : XP total gagné.
+    _bump_stat(guild, member, "xp_total", amount)
+
     if new_level <= old_level:
         return None
 
@@ -71,6 +95,18 @@ async def add_xp(
     if channel:
         await send_level_up_message(member, guild, new_level, channel)
     return (old_level, new_level)
+
+
+def _bump_stat(guild: discord.Guild, member: discord.Member, field: str, amount: int) -> None:
+    """Incrémente un champ de stats persistant."""
+    data = db.stats()
+    ud = data.setdefault(str(guild.id), {}).setdefault(str(member.id), {})
+    ud[field] = ud.get(field, 0) + amount
+    db.save_stats(data)
+
+
+def bump_stat(guild: discord.Guild, member: discord.Member, field: str, amount: int = 1) -> None:
+    _bump_stat(guild, member, field, amount)
 
 
 async def send_level_up_message(

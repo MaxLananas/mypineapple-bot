@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 
-from utils.api import api_send, media_gallery
+from utils.api import api_send, media_gallery, get_session
 from utils.helpers import ts_now
 from config import LOG_HUB_CHANNEL_ID
 
@@ -27,6 +27,29 @@ THREAD_NAMES = {
 _thread_cache:    dict[str, int] = {}
 _snipe_cache:     dict[int, dict] = {}
 _editsnipe_cache: dict[int, dict] = {}
+# Cache des profils (banner / bio) pour détecter les changements.
+_user_meta_cache: dict[int, dict] = {}
+
+
+def _banner_url(user_id: int, banner_hash: str) -> str:
+    ext = "gif" if banner_hash.startswith("a_") else "png"
+    return f"https://cdn.discordapp.com/banners/{user_id}/{banner_hash}.{ext}?size=1024"
+
+
+async def _fetch_profile(user_id: int) -> dict:
+    """Récupère bio + banner + accent via l'API REST (non exposés par discord.py)."""
+    try:
+        session = get_session()
+    except RuntimeError:
+        return {}
+    try:
+        async with session.get(f"https://discord.com/api/v10/users/{user_id}") as r:
+            if r.status != 200:
+                return {}
+            return await r.json()
+    except Exception as e:
+        log.warning("_fetch_profile(%s): %s", user_id, e)
+        return {}
 
 
 def _thumbnail(url: str) -> dict:
@@ -210,13 +233,16 @@ class Logs(commands.Cog):
     async def on_member_join(self, member: discord.Member):
         ts      = ts_now()
         created = int(member.created_at.timestamp())
+        age     = ts - created
+        new_acc = age < 86400  # compte créé il y a moins de 24h
         await _log(
-            member.guild, "joins", 0x57F287,
-            f"## 📥 Member Joined\n"
+            member.guild, "joins", 0xED4245 if new_acc else 0x57F287,
+            f"## {'⚠️' if new_acc else '📥'} Member Joined\n"
             f"**User** {member.mention} (`{member.id}`)\n"
             f"**Tag** `{member}`\n"
             f"**Account created** <t:{created}:R>\n"
-            f"**At** <t:{ts}:F>",
+            + ("**⚠️ NEW ACCOUNT (< 24h)** — possible alt / raid.\n" if new_acc else "")
+            + f"**At** <t:{ts}:F>",
             thumbnail=str(member.display_avatar.url),
         )
 
@@ -289,23 +315,143 @@ class Logs(commands.Cog):
                     )
                     break
 
-        # Bio / bannière (accès via fetch si l'intent est actif).
+        # Bio / bannière (via REST, car non fournis par l'événement gateway).
+        for guild in self.bot.guilds:
+            member = guild.get_member(after.id)
+            if not member:
+                continue
+            profile = await _fetch_profile(after.id)
+            if not profile:
+                break
+            prev = _user_meta_cache.get(after.id, {})
+            banner = profile.get("banner")
+            bio = profile.get("bio")
+            accent = profile.get("accent_color")
+
+            if banner and banner != prev.get("banner"):
+                await _log(
+                    guild, "avatars", 0x57F287,
+                    f"## 🖼️ Banner Changed\n"
+                    f"**User** {member.mention} (`{member.id}`)\n"
+                    f"**At** <t:{ts}:F>",
+                    gallery=[_banner_url(after.id, banner)],
+                )
+            elif banner is None and prev.get("banner"):
+                await _log(
+                    guild, "avatars", 0xED4245,
+                    f"## 🖼️ Banner Removed\n"
+                    f"**User** {member.mention} (`{member.id}`)\n"
+                    f"**At** <t:{ts}:F>",
+                )
+
+            if bio != prev.get("bio"):
+                old = prev.get("bio") or "*none*"
+                new = bio or "*none*"
+                await _log(
+                    guild, "members", 0xF7CAC9,
+                    f"## 📝 Bio Changed\n"
+                    f"**User** {member.mention} (`{member.id}`)\n"
+                    f"**Before** {old[:300]}\n"
+                    f"**After** {new[:300]}\n"
+                    f"**At** <t:{ts}:F>",
+                )
+
+            _user_meta_cache[after.id] = {"banner": banner, "bio": bio, "accent": accent}
+            break
+
+    # ── Statuts / activités ─────────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_presence_update(self, before: discord.Member, after: discord.Member):
+        ts = ts_now()
+
+        # Statut custom
+        before_custom = next(
+            (a.state for a in before.activities if a.type == discord.ActivityType.custom),
+            None,
+        )
+        after_custom = next(
+            (a.state for a in after.activities if a.type == discord.ActivityType.custom),
+            None,
+        )
+        if before_custom != after_custom:
+            if after_custom:
+                await _log(
+                    after.guild, "members", 0xF7CAC9,
+                    f"## 🏷️ Custom Status Set\n"
+                    f"**User** {after.mention} (`{after.id}`)\n"
+                    f"**Status** {after_custom}\n"
+                    f"**At** <t:{ts}:F>",
+                )
+            elif before_custom:
+                await _log(
+                    after.guild, "members", 0xED4245,
+                    f"## 🏷️ Custom Status Cleared\n"
+                    f"**User** {after.mention} (`{after.id}`)\n"
+                    f"**At** <t:{ts}:F>",
+                )
+
+        # Activité (jeu, streaming, écoute…)
+        before_act = next(
+            (a.name for a in before.activities if a.type != discord.ActivityType.custom),
+            None,
+        )
+        after_act = next(
+            (a.name for a in after.activities if a.type != discord.ActivityType.custom),
+            None,
+        )
+        if before_act != after_act and after_act:
+            await _log(
+                after.guild, "members", 0xA8D8EA,
+                f"## 🎮 Activity Started\n"
+                f"**User** {after.mention} (`{after.id}`)\n"
+                f"**Playing** {after_act}\n"
+                f"**At** <t:{ts}:F>",
+            )
+
+    # ── Invitations ─────────────────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_invite_create(self, invite: discord.Invite):
+        ts = ts_now()
+        await _log(
+            invite.guild, "server", 0x57F287,
+            f"## 🔗 Invite Created\n"
+            f"**Code** `{invite.code}`\n"
+            f"**Channel** {invite.channel.mention if invite.channel else '?'}\n"
+            f"**By** {invite.inviter.mention if invite.inviter else '?'}\n"
+            f"**Max uses** `{invite.max_uses if invite.max_uses else '∞'}`\n"
+            f"**At** <t:{ts}:F>",
+        )
+
+    @commands.Cog.listener()
+    async def on_invite_delete(self, invite: discord.Invite):
+        ts = ts_now()
+        await _log(
+            invite.guild, "server", 0xED4245,
+            f"## 🔗 Invite Deleted\n"
+            f"**Code** `{invite.code}`\n"
+            f"**Channel** {invite.channel.mention if invite.channel else '?'}\n"
+            f"**At** <t:{ts}:F>",
+        )
+
+    # ── Webhooks ────────────────────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_webhooks_update(self, channel: discord.abc.GuildChannel):
+        ts = ts_now()
         try:
-            if before.global_name != after.global_name:
-                for guild in self.bot.guilds:
-                    member = guild.get_member(after.id)
-                    if member:
-                        await _log(
-                            guild, "members", 0xA8D8EA,
-                            f"## 🏷️ Display Name Changed\n"
-                            f"**User** {member.mention} (`{member.id}`)\n"
-                            f"**Before** `{before.global_name}`\n"
-                            f"**After** `{after.global_name}`\n"
-                            f"**At** <t:{ts}:F>",
-                        )
-                        break
-        except Exception as e:
-            log.warning("on_user_update display-name: %s", e)
+            webhooks = await channel.webhooks()
+        except discord.Forbidden:
+            webhooks = []
+        names = ", ".join(f"`{w.name}`" for w in webhooks) or "none"
+        await _log(
+            channel.guild, "server", 0x9B8EC4,
+            f"## 🪝 Webhooks Updated\n"
+            f"**Channel** {channel.mention}\n"
+            f"**Webhooks** {names}\n"
+            f"**At** <t:{ts}:F>",
+        )
 
     # ── Canaux ──────────────────────────────────────────────────────────────
 
@@ -333,16 +479,36 @@ class Logs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_channel_update(self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
-        if before.name == after.name:
-            return
         ts = ts_now()
-        await _log(
-            before.guild, "channels", 0xFEE75C,
-            f"## 📺 Channel Renamed\n"
-            f"**Before** `{before.name}`\n"
-            f"**After** `{after.name}`\n"
-            f"**At** <t:{ts}:F>",
-        )
+        if before.name != after.name:
+            await _log(
+                before.guild, "channels", 0xFEE75C,
+                f"## 📺 Channel Renamed\n"
+                f"**Before** `{before.name}`\n"
+                f"**After** `{after.name}`\n"
+                f"**At** <t:{ts}:F>",
+            )
+
+        # Changement de permissions (overwrites).
+        if isinstance(before, discord.abc.GuildChannel) and isinstance(after, discord.abc.GuildChannel):
+            b_over = {str(k.id) if hasattr(k, "id") else str(k): v for k, v in before.overwrites.items()}
+            a_over = {str(k.id) if hasattr(k, "id") else str(k): v for k, v in after.overwrites.items()}
+            if b_over != a_over:
+                # Décrit sommairement ce qui a changé.
+                changed = []
+                for key in set(b_over) | set(a_over):
+                    ob, oa = b_over.get(key), a_over.get(key)
+                    if ob != oa:
+                        target = after.guild.get_role(int(key)) or after.guild.get_member(int(key))
+                        name = target.name if target else key
+                        changed.append(f"`{name}`")
+                await _log(
+                    before.guild, "channels", 0x9B8EC4,
+                    f"## 🛡️ Channel Permissions Changed\n"
+                    f"**Channel** {after.mention}\n"
+                    f"**Targets** {', '.join(changed) or '?'}\n"
+                    f"**At** <t:{ts}:F>",
+                )
 
     # ── Voix ────────────────────────────────────────────────────────────────
 

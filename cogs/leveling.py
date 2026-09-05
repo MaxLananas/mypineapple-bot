@@ -1,24 +1,40 @@
 from __future__ import annotations
-import random
 import logging
+import random
 import time
+from collections import defaultdict, deque
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import utils.db as db
-from utils.leveling import add_xp, sync_level_roles
-from config import NO_XP_CHANNEL_ID
+from utils.leveling import add_xp, sync_level_roles, bump_stat
+from config import (
+    NO_XP_CHANNEL_ID,
+    XP_MIN, XP_MAX, XP_COOLDOWN_SECONDS,
+    VOICE_XP_INTERVAL, VOICE_XP_AMOUNT,
+    REACTION_XP_AMOUNT, REACTION_XP_COOLDOWN,
+    ANTISPAM_WINDOW, ANTISPAM_THRESHOLD,
+)
 
 log = logging.getLogger(__name__)
 
 _xp_cooldowns: dict[int, float] = {}
+_reaction_cooldowns: dict[int, float] = {}
+# Anti-spam : file de (contenu, timestamp) par utilisateur.
+_recent_messages: dict[int, deque] = defaultdict(lambda: deque(maxlen=10))
 
 
 class Leveling(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.voice_xp_loop.start()
+
+    def cog_unload(self):
+        self.voice_xp_loop.cancel()
+
+    # ── XP message + anti-spam ───────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -30,21 +46,76 @@ class Leveling(commands.Cog):
         now = time.time()
         uid = message.author.id
 
-        if now - _xp_cooldowns.get(uid, 0) < 60:
+        # ── Anti-spam copier-coller ──────────────────────────────────────────
+        recent = _recent_messages[uid]
+        content = message.content.strip()
+        if content:
+            dupes = sum(1 for c, t in recent if c == content and now - t < ANTISPAM_WINDOW)
+            if dupes >= ANTISPAM_THRESHOLD:
+                return  # farm neutralisé, pas d'XP
+            recent.append((content, now))
+
+        if now - _xp_cooldowns.get(uid, 0) < XP_COOLDOWN_SECONDS:
             return
         _xp_cooldowns[uid] = now
 
-        # Nettoyage périodique du dict de cooldown (évite de grossir indéfiniment)
+        # Nettoyage périodique des cooldowns.
         if len(_xp_cooldowns) > 5000:
             for k in [k for k, v in _xp_cooldowns.items() if now - v > 3600]:
                 _xp_cooldowns.pop(k, None)
 
+        bump_stat(message.guild, message.author, "messages", 1)
         await add_xp(
             guild=message.guild,
             member=message.author,
-            amount=random.randint(15, 25),
+            amount=random.randint(XP_MIN, XP_MAX),
             channel=message.channel,
         )
+
+    # ── XP réactions ─────────────────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
+        if user.bot or not reaction.message.guild:
+            return
+        # Ne récompense que les réactions sur les salons d'annonce (type news).
+        if getattr(reaction.message.channel, "type", None) != discord.ChannelType.news:
+            return
+
+        now = time.time()
+        if now - _reaction_cooldowns.get(user.id, 0) < REACTION_XP_COOLDOWN:
+            return
+        _reaction_cooldowns[user.id] = now
+
+        member = reaction.message.guild.get_member(user.id)
+        if member is None:
+            return
+        await add_xp(
+            guild=reaction.message.guild,
+            member=member,
+            amount=REACTION_XP_AMOUNT,
+        )
+
+    # ── XP vocal (toutes les 10 min) ─────────────────────────────────────────
+
+    @tasks.loop(seconds=VOICE_XP_INTERVAL)
+    async def voice_xp_loop(self):
+        for guild in self.bot.guilds:
+            afk_id = guild.afk_channel.id if guild.afk_channel else None
+            for vc in guild.voice_channels:
+                if vc.id == afk_id:
+                    continue
+                for member in vc.members:
+                    if member.bot:
+                        continue
+                    bump_stat(guild, member, "voice_seconds", VOICE_XP_INTERVAL)
+                    await add_xp(guild=guild, member=member, amount=VOICE_XP_AMOUNT)
+
+    @voice_xp_loop.before_loop
+    async def _before_voice_loop(self):
+        await self.bot.wait_until_ready()
+
+    # ── Commandes admin ──────────────────────────────────────────────────────
 
     @app_commands.command(name="xp-reset", description="Reset a member's XP and level.")
     @app_commands.checks.has_permissions(administrator=True)

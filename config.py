@@ -16,10 +16,13 @@ NO_XP_CHANNEL_ID      = 1525598251015868466
 WELCOME_CHANNEL_ID    = 1518717925144526980
 REVIEW_FORUM_ID       = 1540774649347186789
 LOG_HUB_CHANNEL_ID    = 1521230854007951500
+DB_CHANNEL_ID         = int(os.environ.get("DB_CHANNEL_ID", 1545613510816301056))  # salon de sauvegarde DB
 
 SUPPORT_ROLE_ID = 1186432110752448574
 AUTOROLE_ID     = 1518723809082085588
 CLIENT_ROLE_ID  = 1540771567938568303
+NO_XP_ROLE_ID   = 1545611751750373416   # rôle « muted XP »
+BOOSTER_ROLE_ID = 1545613908545507338   # rôle booster (bonus XP)
 
 REVIEW_TAG_5STARS     = 1540784140386050088
 REVIEW_TAG_4STARS     = 1540785959140982845
@@ -59,6 +62,18 @@ LEVEL_ROLE_NAMES: dict[int, str] = {
 }
 
 RELEASE_BASE = "https://github.com/MaxLananas/Asset-Portfolio/releases/download/images-v1/"
+
+# ── Leveling / XP ───────────────────────────────────────────────────────────
+XP_MIN                 = 15          # XP min par message
+XP_MAX                 = 25          # XP max par message
+XP_COOLDOWN_SECONDS    = 60          # cooldown entre 2 gains de XP (message)
+VOICE_XP_INTERVAL      = 600         # toutes les 10 minutes en vocal
+VOICE_XP_AMOUNT        = 15          # XP octroyé par intervalle vocal
+REACTION_XP_AMOUNT     = 2           # XP par réaction (petit, anti-farm)
+REACTION_XP_COOLDOWN   = 60          # cooldown réaction (secondes)
+BOOSTER_XP_MULTIPLIER  = 1.5         # multiplicateur XP pour les boosters
+ANTISPAM_WINDOW        = 60          # fenêtre de détection copier-coller (s)
+ANTISPAM_THRESHOLD     = 3           # N messages identiques → XP neutralisé
 
 CREDITS: dict[str, dict] = {
     "bte":         {"label": "BuildTheEarth France", "url": None},

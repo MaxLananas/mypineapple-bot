@@ -220,6 +220,59 @@ async def _post_review_to_forum(
     return thread
 
 
+class PortfolioView(discord.ui.View):
+    """Portfolio paginé en DM (boutons ← →)."""
+
+    def __init__(self, entries: list[dict], author: discord.User, total_builds: int, collab_text: str):
+        super().__init__(timeout=600)
+        self.entries = entries
+        self.author = author
+        self.total_builds = total_builds
+        self.collab_text = collab_text
+        self.page = 0
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.prev.disabled = self.page == 0
+        self.next.disabled = self.page >= len(self.entries) - 1
+
+    def build_embed(self) -> discord.Embed:
+        entry  = self.entries[self.page]
+        credit = entry.get("credit")
+        credit_info = CREDITS.get(credit) if credit else None
+        caption = f"Collaboration: {credit_info['label']}" if credit_info else "Personal build"
+
+        embed = discord.Embed(
+            title=f"🏗️ Portfolio — MaxLananas",
+            description=(
+                f"**{self.total_builds} builds** · page **{self.page + 1}/{len(self.entries)}**\n"
+                f"-# {caption}"
+            ),
+            color=0x1E90FF,
+        )
+        embed.set_image(url=RELEASE_BASE + entry["name"])
+        embed.add_field(
+            name="🔗 Links",
+            value=f"[Website]({WEBSITE_URL}) · [YouTube]({YOUTUBE_URL}) · [Instagram]({INSTAGRAM_URL})",
+            inline=False,
+        )
+        embed.add_field(name="🤝 Collaborations", value=self.collab_text, inline=False)
+        embed.set_footer(text=f"Requested by {self.author}")
+        return embed
+
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary, custom_id="portfolio_prev")
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary, custom_id="portfolio_next")
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(len(self.entries) - 1, self.page + 1)
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+
 class ReviewStep1(discord.ui.Modal, title="Review — Step 1 / 2"):
     project = discord.ui.TextInput(
         label="Project / commission name",
@@ -614,21 +667,9 @@ class Profile(commands.Cog):
         })
         await interaction.delete_original_response()
 
-    @app_commands.command(name="portfolio", description="Receive the build portfolio in DM.")
+    @app_commands.command(name="portfolio", description="Receive the build portfolio in DM (paginated).")
     async def portfolio(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        selected     = random.sample(PORTFOLIO_FILES, min(8, len(PORTFOLIO_FILES)))
-        credits_present: set[str] = {f["credit"] for f in PORTFOLIO_FILES if f["credit"]}
-
-        collab_lines = []
-        for key in credits_present:
-            info  = CREDITS.get(key, {})
-            label = info.get("label", key)
-            url   = info.get("url")
-            collab_lines.append(f"• [{label}]({url})" if url else f"• **{label}**")
-
-        collab_text  = "\n".join(collab_lines) if collab_lines else "Personal projects only."
-        total_builds = len(PORTFOLIO_FILES)
 
         try:
             dm = await interaction.user.create_dm()
@@ -636,66 +677,34 @@ class Profile(commands.Cog):
             await interaction.followup.send("❌ Enable your DMs first!", ephemeral=True)
             return
 
-        await api_send(dm.id, {
-            "flags": 32768,
-            "components": [
-                {
-                    "type": 17,
-                    "accent_color": 0x1E90FF,
-                    "components": [
-                        {
-                            "type": 9,
-                            "components": [
-                                {
-                                    "type": 10,
-                                    "content": (
-                                        f"# 🏗️ Portfolio — MaxLananas\n"
-                                        f"**{total_builds} builds** in the portfolio.\n"
-                                        f"Here is a selection of **{len(selected)}** highlights."
-                                    ),
-                                }
-                            ],
-                            "accessory": {"type": 11, "media": {"url": LOGO_URL}},
-                        },
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 10,
-                            "content": (
-                                f"**Collaborations**\n{collab_text}\n\n"
-                                f"**Links**\n"
-                                f"🌐 [Website]({WEBSITE_URL})\n"
-                                f"▶️ [YouTube]({YOUTUBE_URL})\n"
-                                f"📸 [Instagram]({INSTAGRAM_URL})"
-                            ),
-                        },
-                    ],
-                }
-            ],
-        })
+        credits_present: set[str] = {f["credit"] for f in PORTFOLIO_FILES if f["credit"]}
+        collab_lines = []
+        for key in credits_present:
+            info  = CREDITS.get(key, {})
+            label = info.get("label", key)
+            url   = info.get("url")
+            collab_lines.append(f"• [{label}]({url})" if url else f"• **{label}**")
+        collab_text = "\n".join(collab_lines) if collab_lines else "Personal projects only."
+        total_builds = len(PORTFOLIO_FILES)
 
-        for entry in selected:
-            img_url     = RELEASE_BASE + entry["name"]
-            credit      = entry.get("credit")
-            credit_info = CREDITS.get(credit) if credit else None
-            caption     = "-# " + (
-                f"Collaboration: {credit_info['label']}" if credit_info else "Personal build"
-            )
-            await api_send(dm.id, {
-                "flags": 32768,
-                "components": [
-                    {
-                        "type": 17,
-                        "accent_color": 0xA8D8EA,
-                        "components": [
-                            {"type": 12, "items": [{"media": {"url": img_url}}]},
-                            {"type": 10, "content": caption},
-                        ],
-                    }
-                ],
-            })
+        shuffled = random.sample(PORTFOLIO_FILES, len(PORTFOLIO_FILES))
+
+        view = PortfolioView(
+            entries=shuffled,
+            author=interaction.user,
+            total_builds=total_builds,
+            collab_text=collab_text,
+        )
+        embed = view.build_embed()
+
+        try:
+            await dm.send(embed=embed, view=view)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ Enable your DMs first!", ephemeral=True)
+            return
 
         await interaction.followup.send(
-            "✓ Portfolio sent to your DMs! Check your messages. 🍍", ephemeral=True
+            "✓ Portfolio sent to your DMs (paginated with buttons)! 🍍", ephemeral=True
         )
 
     @app_commands.command(name="review", description="Leave a review for a commission.")

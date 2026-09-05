@@ -1,6 +1,39 @@
-# 🍍 MyPineapple Bot — Guide Neon + 100 suggestions
+# 🍍 MyPineapple Bot — Guide + 100 suggestions
 
 ---
+
+## ✅ STATUT — ce qui est déjà implémenté (à ta demande)
+
+| # | Demande | Statut |
+|---|---|---|
+| — | **DB dans un salon Discord** (ton idée génie) | ✅ `utils/db.py` : snapshot JSON `db_snapshot.json` uploadé dans le salon, rechargé au démarrage. Migration auto depuis `data/bot.db`. |
+| 3 | XP vocal (toutes les 10 min) | ✅ `cogs/leveling.py` (`voice_xp_loop`) |
+| 5 | Anti-spam XP (copier-coller) | ✅ fenêtre + seuil configurables |
+| 4 | XP réactions (salons d'annonce) | ✅ `on_reaction_add` (canaux news) |
+| 13 | Désactivation XP par rôle | ✅ `NO_XP_ROLE_ID` (1545611751750373416) |
+| 14 | `/stats` (messages, XP, temps vocal) | ✅ `cogs/info.py` + store `stats` |
+| 17 | Numéro unique de ticket (#0001…) | ✅ `cogs/tickets.py` |
+| 19 | Fermeture avec motif (Résolu/Abandonné/Dupliqué) | ✅ menu au close |
+| 20 | Réouverture d'un ticket | ✅ bouton `Reopen` (vue persistante) |
+| 22 | Transcription avec images | ✅ URLs d'images stockées dans les logs |
+| 23 | Transcription HTML | ✅ `transcript-*.html` généré (+ images intégrées) |
+| 35 | `/purge` par utilisateur | ✅ paramètre `member` |
+| 36 | `/purge` par mot-clé | ✅ paramètre `keyword` |
+| 41 | Logs suppressions avec images/vidéos | ✅ galerie média (type 12) |
+| 42 | Log changements de bio | ✅ via API REST |
+| 43 | Log changements de bannière | ✅ image affichée |
+| 44 | Log statuts custom / activités | ✅ `on_presence_update` (intent presences réactivé) |
+| 45 | Log des invitations | ✅ `on_invite_create` / `on_invite_delete` |
+| 46 | Log des webhooks | ✅ `on_webhooks_update` |
+| 47 | Log des permissions de channel | ✅ `on_guild_channel_update` |
+| 62 | Portfolio paginé (boutons ← →) | ✅ `PortfolioView` |
+| 74 | Détection comptes récents (< 24h) | ✅ alerte dans le log de join |
+| 76 | `/help` dynamique | ✅ `cogs/info.py` |
+| 77 | Emojis dynamiques (50+ emojis) | ✅ `utils/emojis.py` (80+ emojis), intégrés partout |
+| 99 | Rôle booster (bonus XP) | ✅ `BOOSTER_ROLE_ID` (1545613908545507338) → ×1.5 |
+
+---
+
 
 ## PARTIE 1 — Migrer tes données vers Neon (sans rien perdre)
 

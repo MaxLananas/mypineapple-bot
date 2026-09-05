@@ -8,7 +8,8 @@ from discord.ext import commands
 
 import utils.db as db
 from utils.api import api_send
-from utils.helpers import ts_now
+from utils.helpers import ts_now, xp_for_level, progress_bar
+from utils.emojis import E
 from config import (
     LOGO_URL, DISCORD_INVITE, INSTAGRAM_URL, WEBSITE_URL, YOUTUBE_URL,
     LEVEL_ROLES, LEVEL_ROLE_NAMES,
@@ -67,12 +68,8 @@ class Info(commands.Cog):
         ts = int(guild.created_at.timestamp())
         bots = sum(1 for m in guild.members if m.bot)
         humans = guild.member_count - bots
-        # Sans l'intent "presences", le statut est inconnu : on le signale.
-        if self.bot.intents.presences:
-            online = sum(1 for m in guild.members if m.status != discord.Status.offline and not m.bot)
-            online_line = f"**Online** `{online}`\n"
-        else:
-            online_line = ""
+        online = sum(1 for m in guild.members if m.status != discord.Status.offline and not m.bot)
+        online_line = f"**Online** `{online}`\n"
 
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
@@ -317,6 +314,101 @@ class Info(commands.Cog):
                                 f"-# {ml_text}"
                             ),
                         },
+                    ],
+                }
+            ],
+        })
+        await interaction.delete_original_response()
+
+    @app_commands.command(name="stats", description="Your personal activity statistics.")
+    @app_commands.describe(member="Member to inspect (default: yourself).")
+    async def stats(self, interaction: discord.Interaction, member: discord.Member | None = None):
+        target   = member or interaction.user
+        guild_id = str(interaction.guild_id)
+        user_id  = str(target.id)
+
+        st = db.stats().get(guild_id, {}).get(user_id, {})
+        messages = st.get("messages", 0)
+        xp_total = st.get("xp_total", 0)
+        voice_s  = st.get("voice_seconds", 0)
+
+        h, rem = divmod(voice_s, 3600)
+        m, s = divmod(rem, 60)
+        voice_text = f"{h}h {m}m {s}s" if voice_s else "0m"
+
+        ud    = db.levels().get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
+        level = ud["level"]
+        xp    = ud["xp"]
+
+        await interaction.response.defer(ephemeral=True)
+        await api_send(interaction.channel.id, {
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "accent_color": 0x57F287,
+                    "components": [
+                        {
+                            "type": 9,
+                            "components": [
+                                {"type": 10, "content": f"## {E.chart} {target.display_name}'s Stats\n`{target}`"}
+                            ],
+                            "accessory": {"type": 11, "media": {"url": str(target.display_avatar.url)}},
+                        },
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {
+                            "type": 10,
+                            "content": (
+                                f"{E.pencil} **Messages** `{messages}`\n"
+                                f"{E.gem} **XP earned** `{xp_total}`\n"
+                                f"{E.mic} **Voice time** `{voice_text}`\n"
+                                f"{E.star} **Level** `{level}` · `{xp}` XP"
+                            ),
+                        },
+                    ],
+                }
+            ],
+        })
+        await interaction.delete_original_response()
+
+    @app_commands.command(name="help", description="List every command by category.")
+    async def help_cmd(self, interaction: discord.Interaction):
+        categories: dict[str, list[str]] = {}
+        for cmd in self.bot.tree.get_commands():
+            module = getattr(cmd, "module", "other") or "other"
+            cat = module.split(".")[-1] if module else "other"
+            categories.setdefault(cat, []).append(cmd)
+
+        cat_emoji = {
+            "leveling": E.trophy, "tickets": E.folder, "moderation": E.shield,
+            "fun": E.dice, "profile": E.heart, "info": E.info, "welcome": E.island,
+            "logs": E.file,
+        }
+
+        lines = []
+        for cat in sorted(categories):
+            emoji = cat_emoji.get(cat, E.pineapple)
+            cmds = sorted(categories[cat], key=lambda c: c.name)
+            names = " · ".join(f"`/{c.name}`" for c in cmds)
+            lines.append(f"{emoji} **{cat.capitalize()}** — {names}")
+
+        await interaction.response.defer(ephemeral=True)
+        await api_send(interaction.channel.id, {
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "accent_color": 0x9B8EC4,
+                    "components": [
+                        {
+                            "type": 9,
+                            "components": [
+                                {"type": 10, "content": f"# {E.pineapple} MyPineapple Help\nAll available commands."}
+                            ],
+                            "accessory": {"type": 11, "media": {"url": LOGO_URL}},
+                        },
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {"type": 10, "content": "\n\n".join(lines)},
                     ],
                 }
             ],
