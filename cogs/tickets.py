@@ -116,6 +116,29 @@ def _transcript_txt(logs: list[str]) -> str:
     return "\n".join(logs)
 
 
+async def _history_to_logs(channel: discord.TextChannel, info: dict) -> list[str]:
+    """Reconstruit le transcript depuis l'historique du channel (source de vérité)."""
+    lines = [
+        "[TICKET OPENED]",
+        f"Number  : #{info.get('number', '?')}",
+        f"Type    : {info.get('type', '?')}",
+        f"Channel : {channel.name} ({channel.id})",
+        "─" * 48,
+    ]
+    try:
+        async for msg in channel.history(limit=1000, oldest_first=True):
+            if msg.author.bot and not msg.content and not msg.attachments:
+                continue
+            ts = msg.created_at.strftime("%H:%M:%S")
+            line = f"[{ts}] {msg.author} ({msg.author.id}): {msg.content}"
+            if msg.attachments:
+                line += " | attachments: " + ", ".join(a.url for a in msg.attachments)
+            lines.append(line)
+    except Exception as e:
+        log.error("_history_to_logs: %s", e)
+    return lines
+
+
 def _transcript_html(logs: list[str], title: str) -> str:
     """Transcript HTML lisible, avec images intégrées."""
     esc = html.escape
@@ -206,6 +229,10 @@ async def _do_close_ticket(
     ts      = ts_now()
 
     logs = db.ticketlogs().get(str(channel.id), [])
+    # Fallback robuste : si les logs en mémoire sont vides (restart, purge…),
+    # on reconstruit le transcript depuis l'historique réel du channel.
+    if not logs:
+        logs = await _history_to_logs(channel, info)
     closed_logs = list(logs) + [
         "─" * 48,
         "[TICKET CLOSED]",

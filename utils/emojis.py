@@ -5,6 +5,8 @@ pour un style cohérent : `from utils.emojis import E` puis `E.arrow`, etc.
 """
 from __future__ import annotations
 
+import discord
+
 
 class _E:
     # ── Marque / thème ──────────────────────────────────────────
@@ -132,3 +134,13 @@ def all_emojis() -> list[str]:
             seen.add(v)
             out.append(v)
     return out
+
+
+def resolve(guild, key: str, fallback: str) -> str:
+    """Retourne l'emoji custom du serveur s'il existe (nommé `mp_<key>`),
+    sinon le fallback unicode. Permet d'utiliser des emojis de serveur sans
+    coder d'IDs en dur : il suffit de nommer les emojis `mp_arrow_left`, etc."""
+    if guild is None:
+        return fallback
+    emoji = discord.utils.get(guild.emojis, name=f"mp_{key}")
+    return str(emoji) if emoji else fallback

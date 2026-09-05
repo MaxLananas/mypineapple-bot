@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import time
 from datetime import datetime, timezone
 
 import discord
@@ -29,6 +30,10 @@ _snipe_cache:     dict[int, dict] = {}
 _editsnipe_cache: dict[int, dict] = {}
 # Cache des profils (banner / bio) pour détecter les changements.
 _user_meta_cache: dict[int, dict] = {}
+# Anti-spam des statuts : ne log un changement de statut que si suffisamment de
+# temps s'est écoulé depuis le dernier log (évite le flood des "bump bots").
+_presence_cooldown: dict[int, float] = {}
+PRESENCE_LOG_COOLDOWN = 600.0  # 10 minutes min entre 2 logs de statut par user
 
 
 def _banner_url(user_id: int, banner_hash: str) -> str:
@@ -359,13 +364,18 @@ class Logs(commands.Cog):
             _user_meta_cache[after.id] = {"banner": banner, "bio": bio, "accent": accent}
             break
 
-    # ── Statuts / activités ─────────────────────────────────────────────────
+    # ── Statuts / activités (anti-spam) ─────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
-        ts = ts_now()
+        # Ignore les bots (bump bots, etc.) qui font tourner leur statut en boucle.
+        if after.bot:
+            return
 
-        # Statut custom
+        now = time.time()
+        if now - _presence_cooldown.get(after.id, 0) < PRESENCE_LOG_COOLDOWN:
+            return
+
         before_custom = next(
             (a.state for a in before.activities if a.type == discord.ActivityType.custom),
             None,
@@ -374,24 +384,20 @@ class Logs(commands.Cog):
             (a.state for a in after.activities if a.type == discord.ActivityType.custom),
             None,
         )
-        if before_custom != after_custom:
-            if after_custom:
-                await _log(
-                    after.guild, "members", 0xF7CAC9,
-                    f"## 🏷️ Custom Status Set\n"
-                    f"**User** {after.mention} (`{after.id}`)\n"
-                    f"**Status** {after_custom}\n"
-                    f"**At** <t:{ts}:F>",
-                )
-            elif before_custom:
-                await _log(
-                    after.guild, "members", 0xED4245,
-                    f"## 🏷️ Custom Status Cleared\n"
-                    f"**User** {after.mention} (`{after.id}`)\n"
-                    f"**At** <t:{ts}:F>",
-                )
 
-        # Activité (jeu, streaming, écoute…)
+        # Ne log que les NOUVEAUX statuts custom (pas les "cleared" = bruit).
+        if after_custom and after_custom != before_custom:
+            _presence_cooldown[after.id] = now
+            await _log(
+                after.guild, "members", 0xF7CAC9,
+                f"## 🏷️ Custom Status Set\n"
+                f"**User** {after.mention} (`{after.id}`)\n"
+                f"**Status** {after_custom[:200]}\n"
+                f"**At** <t:{ts_now()}:F>",
+            )
+            return
+
+        # Activité (jeu / stream / écoute) — throttlé pareil.
         before_act = next(
             (a.name for a in before.activities if a.type != discord.ActivityType.custom),
             None,
@@ -400,13 +406,14 @@ class Logs(commands.Cog):
             (a.name for a in after.activities if a.type != discord.ActivityType.custom),
             None,
         )
-        if before_act != after_act and after_act:
+        if after_act and after_act != before_act:
+            _presence_cooldown[after.id] = now
             await _log(
                 after.guild, "members", 0xA8D8EA,
                 f"## 🎮 Activity Started\n"
                 f"**User** {after.mention} (`{after.id}`)\n"
-                f"**Playing** {after_act}\n"
-                f"**At** <t:{ts}:F>",
+                f"**Playing** {after_act[:200]}\n"
+                f"**At** <t:{ts_now()}:F>",
             )
 
     # ── Invitations ─────────────────────────────────────────────────────────

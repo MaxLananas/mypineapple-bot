@@ -10,9 +10,9 @@ import utils.db as db
 from utils.api import api_send
 from utils.helpers import ts_now, xp_for_level, progress_bar
 from utils.emojis import E
+from utils.leveling import level_roles, level_role_name
 from config import (
     LOGO_URL, DISCORD_INVITE, INSTAGRAM_URL, WEBSITE_URL, YOUTUBE_URL,
-    LEVEL_ROLES, LEVEL_ROLE_NAMES,
 )
 
 log = logging.getLogger(__name__)
@@ -120,9 +120,9 @@ class Info(commands.Cog):
         ud = db.levels().get(str(interaction.guild_id), {}).get(str(target.id), {"xp": 0, "level": 0})
         level = ud["level"]
         role_name = None
-        for ms in sorted(LEVEL_ROLES, reverse=True):
+        for ms in sorted(level_roles(), reverse=True):
             if level >= ms:
-                role_name = LEVEL_ROLE_NAMES.get(ms)
+                role_name = level_role_name(ms)
                 break
 
         level_line = f"**Level** `{level}` · **XP** `{ud['xp']}`"
@@ -277,12 +277,12 @@ class Info(commands.Cog):
         rank_n = next((i + 1 for i, (uid, _) in enumerate(sorted_) if uid == user_id), "?")
 
         role_name = None
-        for ms in sorted(LEVEL_ROLES, reverse=True):
+        for ms in sorted(level_roles(), reverse=True):
             if level >= ms:
-                role_name = LEVEL_ROLE_NAMES.get(ms)
+                role_name = level_role_name(ms)
                 break
 
-        next_ml = next((l for l in sorted(LEVEL_ROLES) if l > level), None)
+        next_ml = next((l for l in sorted(level_roles()) if l > level), None)
         ml_text = f"Next role at level **{next_ml}**" if next_ml else "All roles unlocked! 🍍"
         role_line = f"**Role** {role_name}\n" if role_name else ""
 
@@ -415,6 +415,25 @@ class Info(commands.Cog):
         })
         await interaction.delete_original_response()
 
+    @app_commands.command(name="emojis", description="Export all custom server emojis.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def emojis_cmd(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        emojis = guild.emojis
+        if not emojis:
+            await interaction.followup.send("No custom emojis on this server.", ephemeral=True)
+            return
+
+        lines = []
+        for e in sorted(emojis, key=lambda x: x.name):
+            lines.append(f"{e} `\\<:{e.name}:{e.id}>`  →  `:{e.name}:`")
+        content = "## 🎨 Custom Emojis\n" + "\n".join(lines)
+        # Trunque si trop long.
+        if len(content) > 1900:
+            content = content[:1900] + "\n…"
+        await interaction.followup.send(content, ephemeral=True)
+
     @app_commands.command(name="leaderboard", description="Show the top 10 members by level.")
     async def leaderboard(self, interaction: discord.Interaction):
         data = db.levels()
@@ -433,9 +452,9 @@ class Info(commands.Cog):
             m = interaction.guild.get_member(int(uid))
             name = m.display_name if m else f"User {uid}"
             role_name = None
-            for ms in sorted(LEVEL_ROLES, reverse=True):
+            for ms in sorted(level_roles(), reverse=True):
                 if ud["level"] >= ms:
-                    role_name = LEVEL_ROLE_NAMES.get(ms)
+                    role_name = level_role_name(ms)
                     break
             suffix = f" · *{role_name}*" if role_name else ""
             lines.append(f"{badge} **{name}** — Level `{ud['level']}`{suffix}")

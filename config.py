@@ -35,30 +35,77 @@ REVIEW_TAG_PARTNER    = 1540786675033047151
 REVIEW_TAG_VERIFIED   = 1540786776866557963
 REVIEW_TAG_FEATURED   = 1540786829740212376
 
+# Un rôle de palier tous les 5 niveaux (5 → 100). Les IDs à 0 sont des rôles
+# à créer : la commande /levelroles-setup les crée et mémorise leurs IDs en DB.
 LEVEL_ROLES: dict[int, int] = {
+    5:   0,
     10:  1525609032499466270,
+    15:  0,
     20:  1525609413556174970,
+    25:  0,
     30:  1525609578379608074,
+    35:  0,
     40:  1525611768507007127,
+    45:  0,
     50:  1525611938283913267,
+    55:  0,
     60:  1525612127421726791,
+    65:  0,
     70:  1525612488916467712,
+    75:  0,
     80:  1525612683854876713,
+    85:  0,
     90:  1525613027918090350,
+    95:  0,
     100: 1525613203990773830,
 }
 
 LEVEL_ROLE_NAMES: dict[int, str] = {
+    5:   "🦠 Plankton",
     10:  "🦀 Mr. Krabs",
+    15:  "🐌 Gary",
     20:  "🐟 Nemo",
+    25:  "🐠 Dory",
     30:  "🪼 Medusa",
+    35:  "🐡 Bloat",
     40:  "🐬 Flipper",
+    45:  "🐢 Crush",
     50:  "🦑 Davy Jones",
+    55:  "🦈 Megalodon",
     60:  "🐙 Ursula",
+    65:  "🌺 Moana",
     70:  "🧜 Ariel",
+    75:  "🧜♂️ Triton",
     80:  "🌊 Aquaman",
+    85:  "🐉 Leviathan",
     90:  "🐋 Moby Dick",
+    95:  "🔱 Poseidon",
     100: "🍍 Pineapple Lord",
+}
+
+# Couleur de chaque rôle de palier (gradient rose → violet). Les niveaux
+# intermédiaires (5, 15, …) sont interpolés entre les couleurs existantes.
+LEVEL_ROLE_COLORS: dict[int, str] = {
+    5:   "ffa2b3",
+    10:  "ffb3ba",
+    15:  "ffbfaf",
+    20:  "ffcba4",
+    25:  "ffdda2",
+    30:  "fff0a0",
+    35:  "e3f0b4",
+    40:  "c8f0c8",
+    45:  "b4e4db",
+    50:  "a0d8ef",
+    55:  "a8cee6",
+    60:  "b0c4de",
+    65:  "9eb2c5",
+    70:  "8da1ad",
+    75:  "a2a0be",
+    80:  "b8a0d0",
+    85:  "a898cc",
+    90:  "9890c8",
+    95:  "9084c4",
+    100: "8878c0",
 }
 
 RELEASE_BASE = "https://github.com/MaxLananas/Asset-Portfolio/releases/download/images-v1/"

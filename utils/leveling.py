@@ -14,6 +14,7 @@ from utils.helpers import (
 from config import (
     LEVEL_ROLES,
     LEVEL_ROLE_NAMES,
+    LEVEL_ROLE_COLORS,
     NO_XP_ROLE_ID,
     BOOSTER_ROLE_ID,
     BOOSTER_XP_MULTIPLIER,
@@ -22,6 +23,19 @@ from config import (
 log = logging.getLogger(__name__)
 
 MAX_LEVEL = 100
+
+
+def level_roles() -> dict[int, int]:
+    """Map niveau → role_id, en fusionnant config.py et les IDs créés en DB
+    (via /levelroles-setup). Filtre les IDs à 0 (rôles pas encore créés)."""
+    merged = {int(k): int(v) for k, v in LEVEL_ROLES.items() if int(v)}
+    for k, v in db.config().get("level_roles", {}).items():
+        merged[int(k)] = int(v)
+    return merged
+
+
+def level_role_name(level: int) -> str | None:
+    return LEVEL_ROLE_NAMES.get(level)
 
 
 def is_xp_disabled(member: discord.Member) -> bool:
@@ -34,7 +48,7 @@ def is_booster(member: discord.Member) -> bool:
 
 
 def milestone_roles_crossed(old_level: int, new_level: int) -> list[int]:
-    return [l for l in sorted(LEVEL_ROLES) if old_level < l <= new_level]
+    return [l for l in sorted(level_roles()) if old_level < l <= new_level]
 
 
 async def sync_level_roles(
@@ -43,7 +57,7 @@ async def sync_level_roles(
     level: int,
 ) -> None:
     """Aligne les rôles palier sur le niveau réel (ajoute ≤ level, retire > level)."""
-    for milestone, role_id in LEVEL_ROLES.items():
+    for milestone, role_id in level_roles().items():
         role = guild.get_role(role_id)
         if not role:
             continue
@@ -123,16 +137,17 @@ async def send_level_up_message(
     bar = progress_bar(xp, needed)
     pct = int((xp / needed) * 100) if needed else 100
 
+    roles = level_roles()
     role_text = ""
-    if level in LEVEL_ROLES:
-        role = guild.get_role(LEVEL_ROLES[level])
+    if level in roles:
+        role = guild.get_role(roles[level])
         if role:
             role_name = LEVEL_ROLE_NAMES.get(level, role.name)
             role_text = f"\n**Role unlocked** {role.mention} — *{role_name}*"
 
-    next_ml = next((l for l in sorted(LEVEL_ROLES) if l > level), None)
+    next_ml = next((l for l in sorted(roles) if l > level), None)
     next_text = f"Next milestone at level **{next_ml}**" if next_ml else "Maximum level reached!"
-    accent = 0xFFD700 if is_max else (0xC3B1E1 if level in LEVEL_ROLES else 0xA8D8EA)
+    accent = 0xFFD700 if is_max else (0xC3B1E1 if level in roles else 0xA8D8EA)
     title = "🏆 Maximum level reached!" if is_max else f"⬆️ Level {level}"
 
     progress_line = (

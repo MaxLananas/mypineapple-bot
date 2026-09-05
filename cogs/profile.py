@@ -10,9 +10,9 @@ from discord.ext import commands
 import utils.db as db
 from utils.api import api_send, get_session
 from utils.helpers import xp_for_level, progress_bar, ts_now
-from utils.leveling import add_xp
+from utils.leveling import add_xp, level_roles, level_role_name
 from config import (
-    LOGO_URL, LEVEL_ROLES, LEVEL_ROLE_NAMES,
+    LOGO_URL,
     PORTFOLIO_FILES, RELEASE_BASE, CREDITS,
     REVIEW_FORUM_ID, WEBSITE_URL, YOUTUBE_URL, INSTAGRAM_URL,
     SUPPORT_ROLE_ID,
@@ -456,9 +456,9 @@ class Profile(commands.Cog):
         rank_n  = next((i + 1 for i, (uid, _) in enumerate(sorted_) if uid == user_id), "?")
 
         role_name = None
-        for ms in sorted(LEVEL_ROLES, reverse=True):
+        for ms in sorted(level_roles(), reverse=True):
             if level >= ms:
-                role_name = LEVEL_ROLE_NAMES.get(ms)
+                role_name = level_role_name(ms)
                 break
 
         daily_data   = db.daily()
@@ -471,7 +471,7 @@ class Profile(commands.Cog):
         roles   = [r.mention for r in reversed(target.roles) if r.name != "@everyone"][:5]
         roles_text = " ".join(roles) if roles else "None"
 
-        next_ml = next((l for l in sorted(LEVEL_ROLES) if l > level), None)
+        next_ml = next((l for l in sorted(level_roles()) if l > level), None)
         ml_text = f"Next milestone: level **{next_ml}**" if next_ml else "🏆 Maximum level reached!"
 
         await interaction.response.defer(ephemeral=True)

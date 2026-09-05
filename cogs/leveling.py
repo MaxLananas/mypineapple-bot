@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import utils.db as db
+from utils.api import api_send
 from utils.leveling import add_xp, sync_level_roles, bump_stat
 from config import (
     NO_XP_CHANNEL_ID,
@@ -16,6 +17,7 @@ from config import (
     VOICE_XP_INTERVAL, VOICE_XP_AMOUNT,
     REACTION_XP_AMOUNT, REACTION_XP_COOLDOWN,
     ANTISPAM_WINDOW, ANTISPAM_THRESHOLD,
+    LEVEL_ROLES, LEVEL_ROLE_NAMES, LEVEL_ROLE_COLORS,
 )
 
 log = logging.getLogger(__name__)
@@ -117,15 +119,84 @@ class Leveling(commands.Cog):
 
     # ── Commandes admin ──────────────────────────────────────────────────────
 
+    @app_commands.command(name="levelroles-setup", description="Create missing level roles with the gradient colors.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def levelroles_setup(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        cfg = db.config()
+        db_roles = cfg.setdefault("level_roles", {})
+
+        created, skipped = [], []
+        for level in sorted(LEVEL_ROLES):
+            role_id = int(db_roles.get(str(level), LEVEL_ROLES[level]))
+            role = guild.get_role(role_id)
+            if role:
+                skipped.append(f"`{level}` {role.mention}")
+                continue
+            name = LEVEL_ROLE_NAMES.get(level, f"Level {level}")
+            # Retire l'emoji de tête pour un nom de rôle propre.
+            clean = name.split(" ", 1)[1] if name[0] not in "abcdefghijklmnopqrstuvwxyz0123456789" else name
+            color_hex = LEVEL_ROLE_COLORS.get(level, "a0d8ef")
+            color = discord.Color(int(color_hex, 16))
+            try:
+                role = await guild.create_role(name=clean, color=color, reason=f"Level {level} milestone")
+            except discord.Forbidden:
+                await interaction.followup.send("❌ I lack permission to create roles.", ephemeral=True)
+                return
+            db_roles[str(level)] = role.id
+            created.append(f"`{level}` {role.mention} (#{color_hex})")
+        db.save_config(cfg)
+
+        lines = []
+        if created:
+            lines.append("**Created:**\n" + "\n".join(created))
+        if skipped:
+            lines.append("**Already exist:**\n" + "\n".join(skipped))
+        await interaction.followup.send(
+            "✅ Level roles synced!\n\n" + "\n\n".join(lines), ephemeral=True
+        )
+
+    @app_commands.command(name="level-rewards", description="List every level role and its threshold.")
+    async def level_rewards(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        cfg = db.config()
+        db_roles = cfg.get("level_roles", {})
+
+        lines = []
+        for level in sorted(LEVEL_ROLES):
+            role_id = int(db_roles.get(str(level), LEVEL_ROLES[level]))
+            role = guild.get_role(role_id)
+            mention = role.mention if role else f"*(missing)*"
+            lines.append(f"`Lv {level:>3}` — {mention}")
+
+        await interaction.response.defer(ephemeral=True)
+        await api_send(interaction.channel.id, {
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "accent_color": 0xC3B1E1,
+                    "components": [
+                        {"type": 10, "content": f"## 🏆 Level Rewards\nAll milestones (5 → 100)."},
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {"type": 10, "content": "\n".join(lines)},
+                    ],
+                }
+            ],
+        })
+        await interaction.delete_original_response()
+
     @app_commands.command(name="xp-reset", description="Reset a member's XP and level.")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(member="Member to reset.")
     async def xp_reset(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.defer(ephemeral=True)
         data = db.levels()
         data.setdefault(str(interaction.guild_id), {})[str(member.id)] = {"xp": 0, "level": 0}
         db.save_levels(data)
         await sync_level_roles(interaction.guild, member, 0)
-        await interaction.response.send_message(f"✓ XP reset for {member.mention}.", ephemeral=True)
+        await interaction.followup.send(f"✓ XP reset for {member.mention}.", ephemeral=True)
 
     @app_commands.command(name="xp-set", description="Force a member's level.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -136,11 +207,12 @@ class Leveling(commands.Cog):
         member: discord.Member,
         level: app_commands.Range[int, 0, 100],
     ):
+        await interaction.response.defer(ephemeral=True)
         data = db.levels()
         data.setdefault(str(interaction.guild_id), {})[str(member.id)] = {"xp": 0, "level": level}
         db.save_levels(data)
         await sync_level_roles(interaction.guild, member, level)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✓ {member.mention} is now level **{level}**.", ephemeral=True
         )
 
