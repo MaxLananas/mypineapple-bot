@@ -15,6 +15,7 @@ logs/
 *.db-wal
 *.sqlite
 *.sqlite3
+migration_export.json
 
 # ── Secrets / env ─────────────────────────────────────────
 .env
