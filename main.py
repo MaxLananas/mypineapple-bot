@@ -4,6 +4,8 @@ import logging
 import logging.handlers
 import os
 import sys
+import traceback
+
 import discord
 from discord.ext import commands
 
@@ -22,8 +24,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("main")
 
-intents = discord.Intents.all()
-bot     = commands.Bot(command_prefix="!", intents=intents)
+# Intents nécessaires :
+#  - members          → join/leave/update (welcome, auto-role, logs)
+#  - message_content  → transcripts, snipe, logs de messages
+#  - presences        → logs de statut custom / activité + compteur "online"
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+intents.presences = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 COGS = [
     "cogs.leveling",
@@ -40,8 +49,13 @@ COGS = [
 @bot.event
 async def on_ready():
     log.info("Connected as %s — %d guild(s)", bot.user, len(bot.guilds))
-    await bot.tree.sync()
-    log.info("Slash commands synced.")
+    try:
+        # Sync global + par guild (plus rapide/fiable en dev). Pas de re-sync
+        # systématique : seulement si une nouvelle commande est enregistrée.
+        synced = await bot.tree.sync()
+        log.info("Slash commands synced: %d command(s).", len(synced))
+    except Exception as e:
+        log.error("tree.sync failed: %s", e)
 
 
 @bot.event
@@ -56,7 +70,17 @@ async def on_app_command_error(
         msg = "❌ I don't have the required permissions."
     elif isinstance(error, discord.app_commands.CommandOnCooldown):
         msg = f"⏳ Wait **{error.retry_after:.1f}s** before using this again."
-    log.error("AppCommandError [%s]: %s", interaction.command, error)
+
+    # Log complet (traceback) pour le diagnostic — indispensable en prod.
+    if isinstance(error, discord.app_commands.CommandInvokeError):
+        log.error(
+            "AppCommandError [%s]:\n%s",
+            interaction.command,
+            "".join(traceback.format_exception(type(error.original), error.original, error.original.__traceback__)),
+        )
+    else:
+        log.error("AppCommandError [%s]: %s", interaction.command, error)
+
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
@@ -64,6 +88,12 @@ async def on_app_command_error(
             await interaction.response.send_message(msg, ephemeral=True)
     except Exception:
         pass
+
+
+@bot.event
+async def on_error(event: str, *args, **kwargs):
+    # Capture les exceptions non gérées des événements (listeners) sans crash.
+    log.error("Unhandled event error in '%s':\n%s", event, traceback.format_exc())
 
 
 async def main() -> None:

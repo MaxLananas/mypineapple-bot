@@ -4,7 +4,13 @@ TOKEN = os.environ.get("TOKEN")
 if not TOKEN:
     raise RuntimeError("TOKEN environment variable is not set.")
 
-LOGO_URL       = "https://i.ibb.co/WWbL1v1k/7391989548e4747ad18756fa467b74da.webp"
+# Logo officiel. Le lien direct i.ibb.co est parfois bloqué par le proxy CDN de
+# Discord ; on passe donc par le proxy Discord (lien fourni par l'admin) qui est
+# toujours servi correctement dans les components v2.
+LOGO_URL = (
+    "https://images-ext-1.discordapp.net/external/e4WlQv_PVwjehWD8UEKkHFqqNetKn47kVgVqiq7qCOU/"
+    "https/i.ibb.co/WWbL1v1k/7391989548e4747ad18756fa467b74da.webp?format=webp"
+)
 DISCORD_INVITE = "https://discord.gg/pnJhKuU2QK"
 INSTAGRAM_URL  = "https://www.instagram.com/maxlananas.builds/"
 WEBSITE_URL    = "https://maxlananas.is-a.dev/"
@@ -16,14 +22,17 @@ NO_XP_CHANNEL_ID      = 1525598251015868466
 WELCOME_CHANNEL_ID    = 1518717925144526980
 REVIEW_FORUM_ID       = 1540774649347186789
 LOG_HUB_CHANNEL_ID    = 1521230854007951500
+DB_CHANNEL_ID         = int(os.environ.get("DB_CHANNEL_ID", 1545613510816301056))  # salon de sauvegarde DB
 
 SUPPORT_ROLE_ID = 1186432110752448574
 AUTOROLE_ID     = 1518723809082085588
 CLIENT_ROLE_ID  = 1540771567938568303
+NO_XP_ROLE_ID   = 1545611751750373416   # rôle « muted XP »
+BOOSTER_ROLE_ID = 1545613908545507338   # rôle booster (bonus XP)
 
 REVIEW_TAG_5STARS     = 1540784140386050088
 REVIEW_TAG_4STARS     = 1540785959140982845
-REVIEW_TAG_3STARS     = 1540785959140982845
+REVIEW_TAG_3STARS     = 1540786007971070092
 REVIEW_TAG_2STARS     = 1540786052371980319
 REVIEW_TAG_1STAR      = 1540786083585982504
 REVIEW_TAG_BUILD      = 1540786428466831460
@@ -32,33 +41,92 @@ REVIEW_TAG_PARTNER    = 1540786675033047151
 REVIEW_TAG_VERIFIED   = 1540786776866557963
 REVIEW_TAG_FEATURED   = 1540786829740212376
 
+# Un rôle de palier tous les 5 niveaux (5 → 100). Les IDs à 0 sont des rôles
+# à créer : la commande /levelroles-setup les crée et mémorise leurs IDs en DB.
 LEVEL_ROLES: dict[int, int] = {
+    5:   1545627787082076210,
     10:  1525609032499466270,
+    15:  1545627901888692254,
     20:  1525609413556174970,
-    30:  1525609413556174970,
+    25:  1545628018934939688,
+    30:  1525609578379608074,
+    35:  1545628133233786940,
     40:  1525611768507007127,
+    45:  1545628203023073290,
     50:  1525611938283913267,
+    55:  1545628355142090852,
     60:  1525612127421726791,
+    65:  1545628431193088000,
     70:  1525612488916467712,
+    75:  1545628529205706823,
     80:  1525612683854876713,
+    85:  1545628648441126922,
     90:  1525613027918090350,
+    95:  1545628815173222460,
     100: 1525613203990773830,
 }
 
 LEVEL_ROLE_NAMES: dict[int, str] = {
+    5:   "🦠 Plankton",
     10:  "🦀 Mr. Krabs",
+    15:  "🐌 Gary",
     20:  "🐟 Nemo",
+    25:  "🐠 Dory",
     30:  "🪼 Medusa",
+    35:  "🐡 Bloat",
     40:  "🐬 Flipper",
+    45:  "🐢 Crush",
     50:  "🦑 Davy Jones",
+    55:  "🦈 Megalodon",
     60:  "🐙 Ursula",
+    65:  "🌺 Moana",
     70:  "🧜 Ariel",
+    75:  "🧜♂️ Triton",
     80:  "🌊 Aquaman",
+    85:  "🐉 Leviathan",
     90:  "🐋 Moby Dick",
+    95:  "🔱 Poseidon",
     100: "🍍 Pineapple Lord",
 }
 
+# Couleur de chaque rôle de palier (gradient rose → violet). Les niveaux
+# intermédiaires (5, 15, …) sont interpolés entre les couleurs existantes.
+LEVEL_ROLE_COLORS: dict[int, str] = {
+    5:   "ffa2b3",
+    10:  "ffb3ba",
+    15:  "ffbfaf",
+    20:  "ffcba4",
+    25:  "ffdda2",
+    30:  "fff0a0",
+    35:  "e3f0b4",
+    40:  "c8f0c8",
+    45:  "b4e4db",
+    50:  "a0d8ef",
+    55:  "a8cee6",
+    60:  "b0c4de",
+    65:  "9eb2c5",
+    70:  "8da1ad",
+    75:  "a2a0be",
+    80:  "b8a0d0",
+    85:  "a898cc",
+    90:  "9890c8",
+    95:  "9084c4",
+    100: "8878c0",
+}
+
 RELEASE_BASE = "https://github.com/MaxLananas/Asset-Portfolio/releases/download/images-v1/"
+
+# ── Leveling / XP ───────────────────────────────────────────────────────────
+XP_MIN                 = 15          # XP min par message
+XP_MAX                 = 25          # XP max par message
+XP_COOLDOWN_SECONDS    = 60          # cooldown entre 2 gains de XP (message)
+VOICE_XP_INTERVAL      = 600         # toutes les 10 minutes en vocal
+VOICE_XP_AMOUNT        = 15          # XP octroyé par intervalle vocal
+REACTION_XP_AMOUNT     = 2           # XP par réaction (petit, anti-farm)
+REACTION_XP_COOLDOWN   = 60          # cooldown réaction (secondes)
+BOOSTER_XP_MULTIPLIER  = 1.5         # multiplicateur XP pour les boosters
+ANTISPAM_WINDOW        = 60          # fenêtre de détection copier-coller (s)
+ANTISPAM_THRESHOLD     = 3           # N messages identiques → XP neutralisé
 
 CREDITS: dict[str, dict] = {
     "bte":         {"label": "BuildTheEarth France", "url": None},
@@ -170,8 +238,3 @@ PORTFOLIO_FILES: list[dict] = [
     {"name": "untitled13.jpg",             "credit": "bte"},
     {"name": "untitled18.jpg",             "credit": "bte"},
 ]
-
-
-def random_build_url() -> str:
-    import random
-    return RELEASE_BASE + random.choice(PORTFOLIO_FILES)["name"]

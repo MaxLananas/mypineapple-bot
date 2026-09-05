@@ -8,10 +8,11 @@ from discord.ext import commands
 
 import utils.db as db
 from utils.api import api_send
-from utils.helpers import ts_now
+from utils.helpers import ts_now, xp_for_level, progress_bar
+from utils.emojis import E
+from utils.leveling import level_roles, level_role_name
 from config import (
     LOGO_URL, DISCORD_INVITE, INSTAGRAM_URL, WEBSITE_URL, YOUTUBE_URL,
-    LEVEL_ROLES, LEVEL_ROLE_NAMES,
 )
 
 log = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class Info(commands.Cog):
         bots = sum(1 for m in guild.members if m.bot)
         humans = guild.member_count - bots
         online = sum(1 for m in guild.members if m.status != discord.Status.offline and not m.bot)
+        online_line = f"**Online** `{online}`\n"
 
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
@@ -94,7 +96,7 @@ class Info(commands.Cog):
                                 f"**Owner** <@{guild.owner_id}>\n"
                                 f"**Created** <t:{ts}:D>\n"
                                 f"**Members** `{guild.member_count}` total · `{humans}` humans · `{bots}` bots\n"
-                                f"**Online** `{online}`\n"
+                                f"{online_line}"
                                 f"**Channels** `{len(guild.text_channels)}` text · `{len(guild.voice_channels)}` voice\n"
                                 f"**Roles** `{len(guild.roles)}`\n"
                                 f"**Boosts** `{guild.premium_subscription_count}` (Level `{guild.premium_tier}`)"
@@ -118,9 +120,9 @@ class Info(commands.Cog):
         ud = db.levels().get(str(interaction.guild_id), {}).get(str(target.id), {"xp": 0, "level": 0})
         level = ud["level"]
         role_name = None
-        for ms in sorted(LEVEL_ROLES, reverse=True):
+        for ms in sorted(level_roles(), reverse=True):
             if level >= ms:
-                role_name = LEVEL_ROLE_NAMES.get(ms)
+                role_name = level_role_name(ms)
                 break
 
         level_line = f"**Level** `{level}` · **XP** `{ud['xp']}`"
@@ -275,12 +277,12 @@ class Info(commands.Cog):
         rank_n = next((i + 1 for i, (uid, _) in enumerate(sorted_) if uid == user_id), "?")
 
         role_name = None
-        for ms in sorted(LEVEL_ROLES, reverse=True):
+        for ms in sorted(level_roles(), reverse=True):
             if level >= ms:
-                role_name = LEVEL_ROLE_NAMES.get(ms)
+                role_name = level_role_name(ms)
                 break
 
-        next_ml = next((l for l in sorted(LEVEL_ROLES) if l > level), None)
+        next_ml = next((l for l in sorted(level_roles()) if l > level), None)
         ml_text = f"Next role at level **{next_ml}**" if next_ml else "All roles unlocked! 🍍"
         role_line = f"**Role** {role_name}\n" if role_name else ""
 
@@ -318,6 +320,119 @@ class Info(commands.Cog):
         })
         await interaction.delete_original_response()
 
+    @app_commands.command(name="stats", description="Your personal activity statistics.")
+    @app_commands.describe(member="Member to inspect (default: yourself).")
+    async def stats(self, interaction: discord.Interaction, member: discord.Member | None = None):
+        target   = member or interaction.user
+        guild_id = str(interaction.guild_id)
+        user_id  = str(target.id)
+
+        st = db.stats().get(guild_id, {}).get(user_id, {})
+        messages = st.get("messages", 0)
+        xp_total = st.get("xp_total", 0)
+        voice_s  = st.get("voice_seconds", 0)
+
+        h, rem = divmod(voice_s, 3600)
+        m, s = divmod(rem, 60)
+        voice_text = f"{h}h {m}m {s}s" if voice_s else "0m"
+
+        ud    = db.levels().get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
+        level = ud["level"]
+        xp    = ud["xp"]
+
+        await interaction.response.defer(ephemeral=True)
+        await api_send(interaction.channel.id, {
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "accent_color": 0x57F287,
+                    "components": [
+                        {
+                            "type": 9,
+                            "components": [
+                                {"type": 10, "content": f"## {E.chart} {target.display_name}'s Stats\n`{target}`"}
+                            ],
+                            "accessory": {"type": 11, "media": {"url": str(target.display_avatar.url)}},
+                        },
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {
+                            "type": 10,
+                            "content": (
+                                f"{E.pencil} **Messages** `{messages}`\n"
+                                f"{E.gem} **XP earned** `{xp_total}`\n"
+                                f"{E.mic} **Voice time** `{voice_text}`\n"
+                                f"{E.star} **Level** `{level}` · `{xp}` XP"
+                            ),
+                        },
+                    ],
+                }
+            ],
+        })
+        await interaction.delete_original_response()
+
+    @app_commands.command(name="help", description="List every command by category.")
+    async def help_cmd(self, interaction: discord.Interaction):
+        categories: dict[str, list[str]] = {}
+        for cmd in self.bot.tree.get_commands():
+            module = getattr(cmd, "module", "other") or "other"
+            cat = module.split(".")[-1] if module else "other"
+            categories.setdefault(cat, []).append(cmd)
+
+        cat_emoji = {
+            "leveling": E.trophy, "tickets": E.folder, "moderation": E.shield,
+            "fun": E.dice, "profile": E.heart, "info": E.info, "welcome": E.island,
+            "logs": E.file,
+        }
+
+        lines = []
+        for cat in sorted(categories):
+            emoji = cat_emoji.get(cat, E.pineapple)
+            cmds = sorted(categories[cat], key=lambda c: c.name)
+            names = " · ".join(f"`/{c.name}`" for c in cmds)
+            lines.append(f"{emoji} **{cat.capitalize()}** — {names}")
+
+        await interaction.response.defer(ephemeral=True)
+        await api_send(interaction.channel.id, {
+            "flags": 32768,
+            "components": [
+                {
+                    "type": 17,
+                    "accent_color": 0x9B8EC4,
+                    "components": [
+                        {
+                            "type": 9,
+                            "components": [
+                                {"type": 10, "content": f"# {E.pineapple} MyPineapple Help\nAll available commands."}
+                            ],
+                            "accessory": {"type": 11, "media": {"url": LOGO_URL}},
+                        },
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {"type": 10, "content": "\n\n".join(lines)},
+                    ],
+                }
+            ],
+        })
+        await interaction.delete_original_response()
+
+    @app_commands.command(name="emojis", description="List all custom server emojis.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def emojis_cmd(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        emojis = sorted(interaction.guild.emojis, key=lambda x: x.name)
+        if not emojis:
+            await interaction.followup.send("No custom emojis on this server.", ephemeral=True)
+            return
+
+        lines = [f"{e} `<:{e.name}:{e.id}>`  `:{e.name}:`" for e in emojis]
+
+        # Pagination : 15 lignes par page, toutes envoyées en éphémère.
+        per_page = 15
+        pages = [lines[i:i + per_page] for i in range(0, len(lines), per_page)]
+        for idx, page in enumerate(pages, 1):
+            content = f"## 🎨 Custom Emojis — {idx}/{len(pages)}\n" + "\n".join(page)
+            await interaction.followup.send(content, ephemeral=True)
+
     @app_commands.command(name="leaderboard", description="Show the top 10 members by level.")
     async def leaderboard(self, interaction: discord.Interaction):
         data = db.levels()
@@ -336,9 +451,9 @@ class Info(commands.Cog):
             m = interaction.guild.get_member(int(uid))
             name = m.display_name if m else f"User {uid}"
             role_name = None
-            for ms in sorted(LEVEL_ROLES, reverse=True):
+            for ms in sorted(level_roles(), reverse=True):
                 if ud["level"] >= ms:
-                    role_name = LEVEL_ROLE_NAMES.get(ms)
+                    role_name = level_role_name(ms)
                     break
             suffix = f" · *{role_name}*" if role_name else ""
             lines.append(f"{badge} **{name}** — Level `{ud['level']}`{suffix}")

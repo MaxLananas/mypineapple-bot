@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import utils.db as db
-from utils.api import api_send
+from utils.api import api_send, MENTIONS_ALL
 from utils.helpers import ts_now
 
 log = logging.getLogger(__name__)
@@ -422,11 +422,53 @@ class Moderation(commands.Cog):
 
     @app_commands.command(name="purge", description="Delete messages in bulk.")
     @app_commands.checks.has_permissions(manage_messages=True)
-    @app_commands.describe(amount="Number of messages (1–100).")
-    async def purge(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+    @app_commands.describe(
+        amount="Number of messages (1–100).",
+        member="Only delete messages from this member.",
+        keyword="Only delete messages containing this keyword.",
+    )
+    async def purge(
+        self,
+        interaction: discord.Interaction,
+        amount: app_commands.Range[int, 1, 100],
+        member: discord.Member | None = None,
+        keyword: str | None = None,
+    ):
         await interaction.response.defer(ephemeral=True)
-        deleted = await interaction.channel.purge(limit=amount)
-        await interaction.followup.send(f"✓ Deleted `{len(deleted)}` message(s).", ephemeral=True)
+
+        kw = keyword.lower() if keyword else None
+
+        def check(m: discord.Message) -> bool:
+            if m.pinned:  # Garde les messages épinglés.
+                return False
+            if member is not None and m.author.id != member.id:
+                return False
+            if kw is not None and kw not in m.content.lower():
+                return False
+            return True
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+        old_count = 0
+
+        try:
+            deleted = await interaction.channel.purge(limit=amount, check=check)
+        except discord.HTTPException:
+            deleted = []
+            async for m in interaction.channel.history(limit=amount):
+                if check(m):
+                    if m.created_at < cutoff:
+                        old_count += 1
+                        continue
+                    try:
+                        await m.delete()
+                        deleted.append(m)
+                    except discord.HTTPException:
+                        old_count += 1
+
+        msg = f"✓ Deleted `{len(deleted)}` message(s)."
+        if old_count:
+            msg += f"\n⚠️ `{old_count}` message(s) skipped (pinned or older than 14 days)."
+        await interaction.followup.send(msg, ephemeral=True)
 
     @app_commands.command(name="slowmode", description="Set the slowmode of a channel.")
     @app_commands.checks.has_permissions(manage_channels=True)
@@ -436,20 +478,28 @@ class Moderation(commands.Cog):
         msg = f"✓ Slowmode **disabled**." if seconds == 0 else f"✓ Slowmode set to **{seconds}s**."
         await interaction.response.send_message(msg, ephemeral=True)
 
-    @app_commands.command(name="lock", description="Lock a channel.")
+    @app_commands.command(name="lock", description="Lock a channel or thread.")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def lock(self, interaction: discord.Interaction):
-        overwrite = interaction.channel.overwrites_for(interaction.guild.default_role)
-        overwrite.send_messages = False
-        await interaction.channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+        channel = interaction.channel
+        if isinstance(channel, discord.Thread):
+            await channel.edit(locked=True)
+        else:
+            overwrite = channel.overwrites_for(interaction.guild.default_role)
+            overwrite.send_messages = False
+            await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
         await interaction.response.send_message("🔒 Channel locked.", ephemeral=True)
 
-    @app_commands.command(name="unlock", description="Unlock a channel.")
+    @app_commands.command(name="unlock", description="Unlock a channel or thread.")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def unlock(self, interaction: discord.Interaction):
-        overwrite = interaction.channel.overwrites_for(interaction.guild.default_role)
-        overwrite.send_messages = None
-        await interaction.channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+        channel = interaction.channel
+        if isinstance(channel, discord.Thread):
+            await channel.edit(locked=False)
+        else:
+            overwrite = channel.overwrites_for(interaction.guild.default_role)
+            overwrite.send_messages = None
+            await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
         await interaction.response.send_message("🔓 Channel unlocked.", ephemeral=True)
 
     @app_commands.command(name="announce", description="Post a styled announcement.")
@@ -515,7 +565,11 @@ class Moderation(commands.Cog):
             ping_components = [{"type": 10, "content": ping_text}] + components[0]["components"]
             components[0]["components"] = ping_components
 
-        status, resp = await api_send(channel.id, {"flags": 32768, "components": components})
+        status, resp = await api_send(
+            channel.id,
+            {"flags": 32768, "components": components},
+            allowed_mentions=MENTIONS_ALL if ping_text else None,
+        )
         msg = f"✓ Announcement posted in {channel.mention}!" if status in (200, 201) else f"✗ Error `{status}`"
         await interaction.followup.send(msg, ephemeral=True)
 
