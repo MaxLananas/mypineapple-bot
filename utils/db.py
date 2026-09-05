@@ -349,6 +349,11 @@ async def _checkpoint_wal() -> None:
             log.warning("wal_checkpoint: %s", e)
 
 
+async def flush() -> None:
+    """Flush all pending changes immediately (used on graceful shutdown)."""
+    await _flush_all()
+
+
 async def flush_loop() -> None:
     await asyncio.sleep(5)
     while True:
@@ -392,3 +397,26 @@ def save_closedtickets(d: dict)  -> None: _set("closedtickets", d)
 def setup() -> None:
     global _lock
     _lock = asyncio.Lock()
+
+
+async def ping() -> float:
+    """Healthcheck: measure DB round-trip latency in milliseconds.
+
+    Returns -1.0 if the DB is unreachable (detects a dead backend).
+    """
+    import time
+    start = time.perf_counter()
+    try:
+        if _backend == "postgres":
+            async with _db.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+        elif _backend == "discord":
+            # No synchronous query; the in-memory cache is always "up".
+            pass
+        else:
+            async with _db.execute("SELECT 1"):
+                pass
+    except Exception as e:
+        log.error("db.ping: %s", e)
+        return -1.0
+    return (time.perf_counter() - start) * 1000.0

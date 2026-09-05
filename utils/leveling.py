@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from datetime import datetime, timezone
 
 import discord
 
@@ -99,8 +100,9 @@ async def add_xp(
     ud["level"] = new_level
     db.save_levels(data)
 
-    # Statistiques : XP total gagné.
+    # Statistics: total XP earned + per-day history (for graphs).
     _bump_stat(guild, member, "xp_total", amount)
+    _bump_daily_xp(guild, member, amount)
 
     if new_level <= old_level:
         return None
@@ -112,11 +114,30 @@ async def add_xp(
 
 
 def _bump_stat(guild: discord.Guild, member: discord.Member, field: str, amount: int) -> None:
-    """Incrémente un champ de stats persistant."""
+    """Increment a persistent stats field."""
     data = db.stats()
     ud = data.setdefault(str(guild.id), {}).setdefault(str(member.id), {})
     ud[field] = ud.get(field, 0) + amount
     db.save_stats(data)
+
+
+def _bump_daily_xp(guild: discord.Guild, member: discord.Member, amount: int) -> None:
+    """Record XP earned today (used by the /stats graph)."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    data = db.stats()
+    ud = data.setdefault(str(guild.id), {}).setdefault(str(member.id), {})
+    daily = ud.setdefault("daily_xp", {})
+    daily[today] = daily.get(today, 0) + amount
+    # Keep a bounded history (last 30 days).
+    if len(daily) > 30:
+        for old in sorted(daily)[:-30]:
+            del daily[old]
+    db.save_stats(data)
+
+
+def daily_xp_history(guild_id: int, user_id: int) -> dict[str, int]:
+    """Return the user's per-day XP history (``{date: xp}``)."""
+    return db.stats().get(str(guild_id), {}).get(str(user_id), {}).get("daily_xp", {})
 
 
 def bump_stat(guild: discord.Guild, member: discord.Member, field: str, amount: int = 1) -> None:

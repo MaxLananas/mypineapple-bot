@@ -1,4 +1,5 @@
 from __future__ import annotations
+import io
 import logging
 import time
 
@@ -7,10 +8,12 @@ from discord import app_commands
 from discord.ext import commands
 
 import utils.db as db
-from utils.api import api_send
-from utils.helpers import ts_now, xp_for_level, progress_bar
+from utils.api import api_send, get_session
+from utils.helpers import xp_needed, MAX_LEVEL
 from utils.emojis import E
-from utils.leveling import level_roles, level_role_name
+from utils.leveling import level_roles, level_role_name, daily_xp_history
+from utils.images import generate_rank_card
+from utils.graphs import generate_xp_graph
 from config import (
     LOGO_URL, DISCORD_INVITE, INSTAGRAM_URL, WEBSITE_URL, YOUTUBE_URL,
 )
@@ -18,6 +21,33 @@ from config import (
 log = logging.getLogger(__name__)
 
 _start_time = time.time()
+
+
+def _rank_data(interaction: discord.Interaction, target: discord.Member) -> dict:
+    """Compute level/XP/rank/role for a member."""
+    data = db.levels()
+    guild_id = str(interaction.guild_id)
+    user_id = str(target.id)
+
+    ud = data.get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
+    level = ud["level"]
+    xp = ud["xp"]
+    needed = xp_needed(level)
+
+    all_u = data.get(guild_id, {})
+    sorted_ = sorted(all_u.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
+    rank_n = next((i + 1 for i, (uid, _) in enumerate(sorted_) if uid == user_id), 1)
+
+    role_name = None
+    for ms in sorted(level_roles(), reverse=True):
+        if level >= ms:
+            role_name = level_role_name(ms)
+            break
+
+    return {
+        "level": level, "xp": xp, "needed": needed, "rank": rank_n,
+        "role_name": role_name, "is_max": level >= MAX_LEVEL,
+    }
 
 
 class Info(commands.Cog):
@@ -191,20 +221,45 @@ class Info(commands.Cog):
         })
         await interaction.delete_original_response()
 
-    @app_commands.command(name="ping", description="Check bot latency.")
+    @app_commands.command(name="ping", description="Check bot, API and database latency.")
     async def ping(self, interaction: discord.Interaction):
-        ws_ms = round(self.bot.latency * 1000)
-        colour = 0x57F287 if ws_ms < 100 else (0xFEE75C if ws_ms < 200 else 0xED4245)
-        icon = "🟢" if ws_ms < 100 else ("🟡" if ws_ms < 200 else "🔴")
         await interaction.response.defer(ephemeral=True)
+
+        ws_ms = round(self.bot.latency * 1000)
+
+        # API latency: time a trivial REST round-trip (own user fetch).
+        api_start = time.perf_counter()
+        try:
+            await self.bot.fetch_user(self.bot.user.id)
+            api_ms = round((time.perf_counter() - api_start) * 1000)
+        except Exception:
+            api_ms = -1
+
+        # Database latency (healthcheck).
+        db_ms = round(await db.ping(), 1)
+
+        def _badge(ms: float) -> str:
+            if ms < 0:
+                return E.dot_red
+            return E.dot_green if ms < 100 else (E.dot_yellow if ms < 250 else E.dot_red)
+
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
                 {
                     "type": 17,
-                    "accent_color": colour,
+                    "accent_color": 0x57F287,
                     "components": [
-                        {"type": 10, "content": f"## {icon} Pong!\n**WebSocket** `{ws_ms}ms`"},
+                        {"type": 10, "content": f"## {E.dot_green} Pong!\nLatency breakdown."},
+                        {"type": 14, "divider": True, "spacing": 1},
+                        {
+                            "type": 10,
+                            "content": (
+                                f"{_badge(ws_ms)} **WebSocket** `{ws_ms}ms`\n"
+                                f"{_badge(api_ms)} **API** `{api_ms}ms`\n"
+                                f"{_badge(db_ms)} **Database** `{db_ms}ms`"
+                            ),
+                        },
                     ],
                 }
             ],
@@ -256,71 +311,34 @@ class Info(commands.Cog):
         })
         await interaction.delete_original_response()
 
-    @app_commands.command(name="rank", description="Check your level and XP.")
+    @app_commands.command(name="rank", description="Show your rank as a styled image card.")
     @app_commands.describe(member="The member to check (default: yourself).")
     async def rank(self, interaction: discord.Interaction, member: discord.Member | None = None):
         target = member or interaction.user
-        data = db.levels()
-        guild_id = str(interaction.guild_id)
-        user_id = str(target.id)
-
-        ud = data.get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
-        level = ud["level"]
-        xp = ud["xp"]
-        from utils.helpers import xp_for_level, progress_bar
-        needed = xp_for_level(level)
-        bar = progress_bar(xp, needed)
-        pct = int((xp / needed) * 100) if needed else 0
-
-        all_u = data.get(guild_id, {})
-        sorted_ = sorted(all_u.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
-        rank_n = next((i + 1 for i, (uid, _) in enumerate(sorted_) if uid == user_id), "?")
-
-        role_name = None
-        for ms in sorted(level_roles(), reverse=True):
-            if level >= ms:
-                role_name = level_role_name(ms)
-                break
-
-        next_ml = next((l for l in sorted(level_roles()) if l > level), None)
-        ml_text = f"Next role at level **{next_ml}**" if next_ml else "All roles unlocked! 🍍"
-        role_line = f"**Role** {role_name}\n" if role_name else ""
-
         await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
-            "flags": 32768,
-            "components": [
-                {
-                    "type": 17,
-                    "accent_color": 0xA8D8EA,
-                    "components": [
-                        {
-                            "type": 9,
-                            "components": [
-                                {
-                                    "type": 10,
-                                    "content": f"## {target.display_name}\nLevel `{level}` · Rank `#{rank_n}`",
-                                }
-                            ],
-                            "accessory": {"type": 11, "media": {"url": str(target.display_avatar.url)}},
-                        },
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 10,
-                            "content": (
-                                f"{role_line}"
-                                f"`{bar}` **{pct}%**\n"
-                                f"`{xp}` / `{needed}` XP\n\n"
-                                f"-# {ml_text}"
-                            ),
-                        },
-                    ],
-                }
-            ],
-        })
-        await interaction.delete_original_response()
 
-    @app_commands.command(name="stats", description="Your personal activity statistics.")
+        rd = _rank_data(interaction, target)
+        try:
+            png = await generate_rank_card(
+                get_session(),
+                avatar_url=str(target.display_avatar.with_size(256).url),
+                username=target.display_name,
+                level=rd["level"],
+                xp=rd["xp"],
+                needed=rd["needed"],
+                rank=rd["rank"],
+                role_name=rd["role_name"],
+                is_max=rd["is_max"],
+            )
+            await interaction.channel.send(
+                file=discord.File(io.BytesIO(png), filename=f"rank-{target.id}.png")
+            )
+            await interaction.delete_original_response()
+        except Exception as e:
+            log.error("rank card: %s", e)
+            await interaction.followup.send("Couldn't generate the rank card.", ephemeral=True)
+
+    @app_commands.command(name="stats", description="Your activity stats with an XP graph.")
     @app_commands.describe(member="Member to inspect (default: yourself).")
     async def stats(self, interaction: discord.Interaction, member: discord.Member | None = None):
         target   = member or interaction.user
@@ -341,6 +359,17 @@ class Info(commands.Cog):
         xp    = ud["xp"]
 
         await interaction.response.defer(ephemeral=True)
+
+        # XP graph over the last 7 days.
+        try:
+            history = daily_xp_history(interaction.guild_id, target.id)
+            graph = generate_xp_graph(username=target.display_name, daily_xp=history)
+            await interaction.channel.send(
+                file=discord.File(io.BytesIO(graph), filename=f"stats-{target.id}.png")
+            )
+        except Exception as e:
+            log.error("stats graph: %s", e)
+
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
@@ -365,50 +394,6 @@ class Info(commands.Cog):
                                 f"{E.star} **Level** `{level}` · `{xp}` XP"
                             ),
                         },
-                    ],
-                }
-            ],
-        })
-        await interaction.delete_original_response()
-
-    @app_commands.command(name="help", description="List every command by category.")
-    async def help_cmd(self, interaction: discord.Interaction):
-        categories: dict[str, list[str]] = {}
-        for cmd in self.bot.tree.get_commands():
-            module = getattr(cmd, "module", "other") or "other"
-            cat = module.split(".")[-1] if module else "other"
-            categories.setdefault(cat, []).append(cmd)
-
-        cat_emoji = {
-            "leveling": E.trophy, "tickets": E.folder, "moderation": E.shield,
-            "fun": E.dice, "profile": E.heart, "info": E.info, "welcome": E.island,
-            "logs": E.file,
-        }
-
-        lines = []
-        for cat in sorted(categories):
-            emoji = cat_emoji.get(cat, E.pineapple)
-            cmds = sorted(categories[cat], key=lambda c: c.name)
-            names = " · ".join(f"`/{c.name}`" for c in cmds)
-            lines.append(f"{emoji} **{cat.capitalize()}** — {names}")
-
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
-            "flags": 32768,
-            "components": [
-                {
-                    "type": 17,
-                    "accent_color": 0x9B8EC4,
-                    "components": [
-                        {
-                            "type": 9,
-                            "components": [
-                                {"type": 10, "content": f"# {E.pineapple} MyPineapple Help\nAll available commands."}
-                            ],
-                            "accessory": {"type": 11, "media": {"url": LOGO_URL}},
-                        },
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {"type": 10, "content": "\n\n".join(lines)},
                     ],
                 }
             ],

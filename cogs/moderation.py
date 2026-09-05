@@ -10,6 +10,7 @@ from discord.ext import commands
 import utils.db as db
 from utils.api import api_send, MENTIONS_ALL
 from utils.helpers import ts_now
+from utils.antispam import process_message
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,14 @@ def parse_duration(text: str) -> timedelta | None:
 class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # Intelligent anti-spam: escalating mutes for repetitive/rapid spam.
+        try:
+            await process_message(message)
+        except Exception as e:
+            log.error("antispam on_message: %s", e)
 
     @app_commands.command(name="ban", description="Ban a member from the server.")
     @app_commands.checks.has_permissions(ban_members=True)

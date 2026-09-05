@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from utils.api import api_send, media_gallery, get_session
 from utils.helpers import ts_now
-from config import LOG_HUB_CHANNEL_ID
+from config import LOG_HUB_CHANNEL_ID, SUPPORT_ROLE_ID
 
 log = logging.getLogger(__name__)
 
@@ -239,14 +239,16 @@ class Logs(commands.Cog):
         ts      = ts_now()
         created = int(member.created_at.timestamp())
         age     = ts - created
-        new_acc = age < 86400  # compte créé il y a moins de 24h
+        new_acc = age < 86400  # account created less than 24h ago
+        # Ping staff so a moderator can keep an eye on fresh accounts.
+        staff_ping = f" <@&{SUPPORT_ROLE_ID}>" if new_acc else ""
         await _log(
             member.guild, "joins", 0xED4245 if new_acc else 0x57F287,
             f"## {'⚠️' if new_acc else '📥'} Member Joined\n"
             f"**User** {member.mention} (`{member.id}`)\n"
             f"**Tag** `{member}`\n"
             f"**Account created** <t:{created}:R>\n"
-            + ("**⚠️ NEW ACCOUNT (< 24h)** — possible alt / raid.\n" if new_acc else "")
+            + ("**⚠️ NEW ACCOUNT (< 24h)** — possible alt / raid." + staff_ping + "\n" if new_acc else "")
             + f"**At** <t:{ts}:F>",
             thumbnail=str(member.display_avatar.url),
         )
