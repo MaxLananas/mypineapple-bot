@@ -10,6 +10,7 @@ from discord.ext import commands
 import utils.db as db
 from utils.api import api_send, get_session
 from utils.helpers import xp_for_level, progress_bar, ts_now
+from utils.leveling import add_xp
 from config import (
     LOGO_URL, LEVEL_ROLES, LEVEL_ROLE_NAMES,
     PORTFOLIO_FILES, RELEASE_BASE, CREDITS,
@@ -254,10 +255,17 @@ class ReviewStep1(discord.ui.Modal, title="Review — Step 1 / 2"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        raw = self.rating.value.strip()
         try:
-            stars = max(1, min(5, int(self.rating.value.strip())))
+            stars = int(raw)
         except ValueError:
-            stars = 5
+            stars = 0
+        if not 1 <= stars <= 5:
+            await interaction.response.send_message(
+                "❌ Rating must be a whole number between **1** and **5**. Please try again.",
+                ephemeral=True,
+            )
+            return
 
         img       = self.image_url.value.strip() if self.image_url.value else None
         valid_img = img if img and _is_valid_url(img) else None
@@ -500,13 +508,13 @@ class Profile(commands.Cog):
         user_data["total_claims"] = user_data.get("total_claims", 0) + 1
         db.save_daily(data)
 
-        lvl_data = db.levels()
-        ud = lvl_data.setdefault(guild_id, {}).setdefault(user_id, {"xp": 0, "level": 0})
-        ud["xp"] += xp_gain
-        while ud["level"] < 100 and ud["xp"] >= xp_for_level(ud["level"]):
-            ud["xp"]    -= xp_for_level(ud["level"])
-            ud["level"] += 1
-        db.save_levels(lvl_data)
+        await add_xp(
+            guild=interaction.guild,
+            member=interaction.user,
+            amount=xp_gain,
+            channel=interaction.channel,
+        )
+        ud = db.levels().get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
 
         streak_bonus = ""
         if streak >= 7:

@@ -14,6 +14,25 @@ NO_MENTIONS = {
     "replied_user": False,
 }
 
+# Pour les messages qui DOIVENT ping (annonces…).
+MENTIONS_ALL = {
+    "parse":        ["users", "roles", "everyone"],
+    "replied_user": True,
+}
+
+
+def media_gallery(items: list[str] | list[tuple[str, str | None]]) -> dict:
+    """Construit un composant galerie média (type 12) — affiche les images/vidéos
+    en ligne plutôt qu'un lien texte."""
+    out = []
+    for it in items:
+        url, desc = it if isinstance(it, tuple) else (it, None)
+        entry: dict = {"media": {"url": url}}
+        if desc:
+            entry["description"] = desc
+        out.append(entry)
+    return {"type": 12, "items": out}
+
 
 def get_session() -> aiohttp.ClientSession:
     if _session is None or _session.closed:
@@ -39,10 +58,16 @@ async def close_session() -> None:
         log.info("aiohttp session closed.")
 
 
-async def api_send(channel_id: int, payload: dict, *, retries: int = 3) -> tuple[int, dict]:
+async def api_send(
+    channel_id: int,
+    payload: dict,
+    *,
+    retries: int = 3,
+    allowed_mentions: dict | None = None,
+) -> tuple[int, dict]:
     session = get_session()
     url     = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-    payload.setdefault("allowed_mentions", NO_MENTIONS)
+    payload["allowed_mentions"] = allowed_mentions if allowed_mentions is not None else NO_MENTIONS
     for _ in range(retries):
         async with session.post(url, json=payload) as r:
             try:
@@ -60,10 +85,17 @@ async def api_send(channel_id: int, payload: dict, *, retries: int = 3) -> tuple
     return 429, {}
 
 
-async def api_edit(channel_id: int, message_id: int, payload: dict, *, retries: int = 3) -> tuple[int, dict]:
+async def api_edit(
+    channel_id: int,
+    message_id: int,
+    payload: dict,
+    *,
+    retries: int = 3,
+    allowed_mentions: dict | None = None,
+) -> tuple[int, dict]:
     session = get_session()
     url     = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}"
-    payload.setdefault("allowed_mentions", NO_MENTIONS)
+    payload["allowed_mentions"] = allowed_mentions if allowed_mentions is not None else NO_MENTIONS
     for _ in range(retries):
         async with session.patch(url, json=payload) as r:
             try:

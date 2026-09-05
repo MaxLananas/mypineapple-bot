@@ -19,8 +19,6 @@ from config import (
 
 log = logging.getLogger(__name__)
 
-_ticket_logs: dict[int, list[str]] = {}
-
 
 def _is_valid_url(url: str) -> bool:
     return url.startswith("http://") or url.startswith("https://")
@@ -89,10 +87,10 @@ async def _do_close_ticket(
     info    = tickets.get(str(channel.id), {})
     ts      = ts_now()
 
-    logs = _ticket_logs.get(channel.id, [])
+    logs = db.ticketlogs().get(str(channel.id), [])
     transcript_file = None
     if logs:
-        logs += [
+        logs = list(logs) + [
             "─" * 48,
             "[TICKET CLOSED]",
             f"Closed by : {closed_by} ({closed_by.id})",
@@ -139,7 +137,10 @@ async def _do_close_ticket(
         del tickets[str(channel.id)]
         db.save_tickets(tickets)
 
-    _ticket_logs.pop(channel.id, None)
+    tlogs = db.ticketlogs()
+    if str(channel.id) in tlogs:
+        del tlogs[str(channel.id)]
+        db.save_ticketlogs(tlogs)
 
     try:
         await channel.delete(reason=f"Closed by {closed_by}")
@@ -378,7 +379,11 @@ async def _create_ticket(
             read_message_history=True, manage_messages=True,
         )
 
-    safe    = member.name.lower().replace(" ", "-")[:18]
+    # Nettoie le pseudo : minuscules, alphanum + tiret/underscore, max 18 chars.
+    safe = "".join(
+        c if c.isalnum() or c in ("-", "_") else "-"
+        for c in member.name.lower()
+    ).strip("-")[:18] or "user"
     channel = await guild.create_text_channel(
         name=f"{type_info['prefix']}-{safe}",
         category=category,
@@ -394,7 +399,8 @@ async def _create_ticket(
     }
     db.save_tickets(tickets)
 
-    _ticket_logs[channel.id] = [
+    tlogs = db.ticketlogs()
+    tlogs[str(channel.id)] = [
         "[TICKET OPENED]",
         f"Type    : {kind}",
         f"User    : {member} ({member.id})",
@@ -402,6 +408,7 @@ async def _create_ticket(
         f"Date    : {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
         "─" * 48,
     ]
+    db.save_ticketlogs(tlogs)
 
     ts = ts_now()
     components_inner = [
@@ -465,83 +472,6 @@ async def _create_ticket(
     return channel
 
 
-async def _post_review_forum(
-    guild:      discord.Guild,
-    member:     discord.Member,
-    stars:      int,
-    project:    str,
-    content:    str,
-    image_url:  str | None = None,
-):
-    forum = guild.get_channel(REVIEW_FORUM_ID)
-    if not forum or not isinstance(forum, discord.ForumChannel):
-        log.warning("Review forum channel %d not found or not a forum.", REVIEW_FORUM_ID)
-        return
-
-    star_display = "⭐" * stars + "☆" * (5 - stars)
-    ts           = ts_now()
-
-    support_role = guild.get_role(SUPPORT_ROLE_ID)
-    overwrites   = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
-        member: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-    }
-    if support_role:
-        overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-
-    components_inner = [
-        {
-            "type": 9,
-            "components": [
-                {
-                    "type": 10,
-                    "content": f"## {star_display}\n**Project** {project}",
-                }
-            ],
-            "accessory": {
-                "type": 11,
-                "media": {"url": str(member.display_avatar.url)},
-            },
-        },
-        {"type": 14, "divider": True, "spacing": 1},
-        {"type": 10, "content": content},
-    ]
-
-    if image_url:
-        components_inner.append({
-            "type": 12,
-            "items": [{"media": {"url": image_url}, "description": "Review screenshot"}],
-        })
-
-    components_inner += [
-        {"type": 14, "divider": True, "spacing": 1},
-        {
-            "type": 10,
-            "content": f"**By** {member.mention} (`{member.id}`)\n**On** <t:{ts}:F>",
-        },
-    ]
-
-    thread, _ = await forum.create_thread(
-        name=f"{star_display} — {member.display_name} · {project[:40]}",
-        auto_archive_duration=10080,
-        overwrites=overwrites,
-        content=None,
-        embed=None,
-        view=None,
-    )
-
-    await api_send(thread.id, {
-        "flags": 32768,
-        "components": [
-            {"type": 17, "accent_color": 0xFFD700, "components": components_inner}
-        ],
-    })
-
-    log.info("Review forum thread created: %s", thread.name)
-    return thread
-
-
 class Tickets(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -552,11 +482,15 @@ class Tickets(commands.Cog):
         if message.author.bot or not message.guild:
             return
         if str(message.channel.id) in db.tickets():
-            ts        = datetime.now(timezone.utc).strftime("%H:%M:%S")
-            log_entry = _ticket_logs.setdefault(message.channel.id, [])
-            log_entry.append(
-                f"[{ts}] {message.author} ({message.author.id}): {message.content}"
-            )
+            ts     = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            tlogs  = db.ticketlogs()
+            entry  = tlogs.get(str(message.channel.id)) or []
+            line   = f"[{ts}] {message.author} ({message.author.id}): {message.content}"
+            if message.attachments:
+                line += " | attachments: " + ", ".join(a.url for a in message.attachments)
+            entry.append(line)
+            tlogs[str(message.channel.id)] = entry
+            db.save_ticketlogs(tlogs)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -781,78 +715,6 @@ class Tickets(commands.Cog):
         )
         await asyncio.sleep(10)
         await _do_close_ticket(channel, interaction.user)
-
-
-async def _post_review_to_forum(
-    guild:     discord.Guild,
-    member:    discord.Member,
-    stars:     int,
-    project:   str,
-    content:   str,
-    image_url: str | None = None,
-):
-    forum = guild.get_channel(REVIEW_FORUM_ID)
-    if not forum or not isinstance(forum, discord.ForumChannel):
-        log.warning("Review forum %d not found or not a ForumChannel.", REVIEW_FORUM_ID)
-        return None
-
-    star_display = "⭐" * stars + "☆" * (5 - stars)
-    ts           = ts_now()
-    support_role = guild.get_role(SUPPORT_ROLE_ID)
-
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
-        member:             discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        guild.me:           discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-    }
-    if support_role:
-        overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-
-    components_inner = [
-        {
-            "type": 9,
-            "components": [
-                {"type": 10, "content": f"## {star_display}\n**Project** {project}"}
-            ],
-            "accessory": {
-                "type": 11,
-                "media": {"url": str(member.display_avatar.url)},
-            },
-        },
-        {"type": 14, "divider": True, "spacing": 1},
-        {"type": 10, "content": content},
-    ]
-
-    if image_url:
-        components_inner.append({
-            "type": 12,
-            "items": [{"media": {"url": image_url}, "description": "Review screenshot"}],
-        })
-
-    components_inner += [
-        {"type": 14, "divider": True, "spacing": 1},
-        {
-            "type": 10,
-            "content": f"**By** {member.mention} (`{member.id}`)\n**On** <t:{ts}:F>",
-        },
-    ]
-
-    thread, _ = await forum.create_thread(
-        name=f"{star_display} {member.display_name} · {project[:40]}",
-        auto_archive_duration=10080,
-        overwrites=overwrites,
-        content=f"{star_display} Review by {member.display_name}",
-    )
-
-    await api_send(thread.id, {
-        "flags": 32768,
-        "components": [
-            {"type": 17, "accent_color": 0xFFD700, "components": components_inner}
-        ],
-    })
-
-    log.info("Review thread created: %s", thread.name)
-    return thread
 
 
 async def setup(bot: commands.Bot):

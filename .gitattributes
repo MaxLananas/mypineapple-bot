@@ -1,0 +1,12 @@
+# Normalise les fins de ligne en LF pour tout le monde (Windows inclus).
+* text=auto eol=lf
+
+# Binaires : pas de conversion.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.db binary
+*.db-shm binary
+*.db-wal binary

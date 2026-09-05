@@ -22,8 +22,13 @@ logging.basicConfig(
 )
 log = logging.getLogger("main")
 
-intents = discord.Intents.all()
-bot     = commands.Bot(command_prefix="!", intents=intents)
+# Intents minimaux : on garde "members" (join/leave/update, welcome) et
+# "message_content" (transcripts, snipe, logs). "presences" est inutile ici
+# (aucun feature critique n'en dépend) et évite des événements gateway en trop.
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 COGS = [
     "cogs.leveling",
@@ -40,8 +45,13 @@ COGS = [
 @bot.event
 async def on_ready():
     log.info("Connected as %s — %d guild(s)", bot.user, len(bot.guilds))
-    await bot.tree.sync()
-    log.info("Slash commands synced.")
+    try:
+        # Sync global + par guild (plus rapide/fiable en dev). Pas de re-sync
+        # systématique : seulement si une nouvelle commande est enregistrée.
+        synced = await bot.tree.sync()
+        log.info("Slash commands synced: %d command(s).", len(synced))
+    except Exception as e:
+        log.error("tree.sync failed: %s", e)
 
 
 @bot.event

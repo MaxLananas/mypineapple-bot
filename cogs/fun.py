@@ -2,12 +2,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import uuid
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.api import api_send, api_edit
+import utils.db as db
+from utils.api import api_send
 from utils.helpers import ts_now
 
 log = logging.getLogger(__name__)
@@ -40,8 +42,6 @@ COINFLIP_SIDES = [
     ("TAILS", "🪙", 0xF7CAC9),
 ]
 
-_poll_state: dict[str, dict] = {}
-
 POLL_EMOJIS  = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 POLL_COLOURS = [
     discord.ButtonStyle.primary,
@@ -50,6 +50,18 @@ POLL_COLOURS = [
     discord.ButtonStyle.secondary,
     discord.ButtonStyle.primary,
 ]
+
+
+def _get_polls() -> dict:
+    """État des sondages, persisté dans le store 'config' (survit au restart)."""
+    cfg = db.config()
+    return cfg.setdefault("polls", {})
+
+
+def _save_polls(polls: dict) -> None:
+    cfg = db.config()
+    cfg["polls"] = polls
+    db.save_config(cfg)
 
 
 def _build_poll_text(question: str, options: list[str], counts: list[int], ts: int, multi: bool) -> str:
@@ -77,26 +89,28 @@ class PollButton(discord.ui.Button):
         self.poll_key = poll_key
 
     async def callback(self, interaction: discord.Interaction):
-        state = _poll_state.get(self.poll_key)
+        state = _get_polls().get(self.poll_key)
         if not state:
             await interaction.response.send_message("Poll expired.", ephemeral=True)
             return
 
-        uid    = interaction.user.id
+        # votes et counts sont stockés avec des clés str (JSON) — on normalise.
         counts = state["counts"]
-        votes  = state["votes"]
+        votes  = {int(k): (set(v) if isinstance(v, list) else v) for k, v in state["votes"].items()}
         multi  = state["multi"]
+        uid    = interaction.user.id
 
+        changed = False
         if multi:
             voted = votes.get(uid, set())
             if self.index in voted:
                 voted.discard(self.index)
                 counts[self.index] = max(0, counts[self.index] - 1)
-                action = f"Removed vote from **{state['options'][self.index]}**"
+                changed = True
             else:
                 voted.add(self.index)
                 counts[self.index] += 1
-                action = f"Voted for **{state['options'][self.index]}**"
+                changed = True
             votes[uid] = voted
         else:
             old = votes.get(uid)
@@ -107,33 +121,51 @@ class PollButton(discord.ui.Button):
                 return
             if old is not None:
                 counts[old] = max(0, counts[old] - 1)
-            votes[uid]          = self.index
+            votes[uid] = self.index
             counts[self.index] += 1
-            action = f"Voted for **{state['options'][self.index]}**"
+            changed = True
 
-        new_text = _build_poll_text(
-            state["question"], state["options"], counts, state["ts"], multi
-        )
-        await interaction.response.edit_message(
-            content=new_text,
-            view=self.view,
-        )
+        # Persiste l'état (votes sérialisés en listes pour le JSON).
+        state["counts"] = counts
+        state["votes"]  = {str(k): (sorted(v) if isinstance(v, set) else v) for k, v in votes.items()}
+        _save_polls(_get_polls())
+
+        if changed:
+            new_text = _build_poll_text(
+                state["question"], state["options"], counts, state["ts"], multi
+            )
+            await interaction.response.edit_message(
+                content=new_text,
+                view=self.view,
+            )
+        else:
+            await interaction.response.defer()
 
 
 class PollView(discord.ui.View):
     def __init__(self, poll_key: str, options: list[str], multi: bool):
-        super().__init__(timeout=3600)
+        super().__init__(timeout=None)  # persistant : survit au restart
         self.poll_key = poll_key
         for i, opt in enumerate(options):
             self.add_item(PollButton(i, opt, poll_key))
 
-    async def on_timeout(self):
-        _poll_state.pop(self.poll_key, None)
+
+def build_poll_view(poll_key: str) -> PollView | None:
+    """Reconstruit la vue depuis l'état persisté (pour le re-enregistrement)."""
+    state = _get_polls().get(poll_key)
+    if not state:
+        return None
+    return PollView(poll_key, state["options"], state["multi"])
 
 
 class Fun(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Ré-enregistre les vues des sondages persistés (survie au restart).
+        for poll_key in list(_get_polls().keys()):
+            view = build_poll_view(poll_key)
+            if view:
+                bot.add_view(view)
 
     @app_commands.command(name="8ball", description="Ask the magic ball a question.")
     @app_commands.describe(question="Your question.")
@@ -250,9 +282,10 @@ class Fun(commands.Cog):
             return
 
         ts       = ts_now()
-        poll_key = f"{interaction.id}"
+        poll_key = uuid.uuid4().hex[:12]
 
-        _poll_state[poll_key] = {
+        polls = _get_polls()
+        polls[poll_key] = {
             "question": question,
             "options":  options,
             "counts":   [0] * len(options),
@@ -260,11 +293,14 @@ class Fun(commands.Cog):
             "ts":       ts,
             "multi":    multi,
         }
+        _save_polls(polls)
 
         text = _build_poll_text(question, options, [0] * len(options), ts, multi)
         view = PollView(poll_key, options, multi)
 
         await interaction.response.send_message(content=text, view=view)
+        # Enregistre la vue persistante auprès du bot (re-disponible au restart).
+        self.bot.add_view(view)
 
 
 async def setup(bot: commands.Bot):

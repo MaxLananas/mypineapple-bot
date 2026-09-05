@@ -67,7 +67,12 @@ class Info(commands.Cog):
         ts = int(guild.created_at.timestamp())
         bots = sum(1 for m in guild.members if m.bot)
         humans = guild.member_count - bots
-        online = sum(1 for m in guild.members if m.status != discord.Status.offline and not m.bot)
+        # Sans l'intent "presences", le statut est inconnu : on le signale.
+        if self.bot.intents.presences:
+            online = sum(1 for m in guild.members if m.status != discord.Status.offline and not m.bot)
+            online_line = f"**Online** `{online}`\n"
+        else:
+            online_line = ""
 
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
@@ -94,7 +99,7 @@ class Info(commands.Cog):
                                 f"**Owner** <@{guild.owner_id}>\n"
                                 f"**Created** <t:{ts}:D>\n"
                                 f"**Members** `{guild.member_count}` total · `{humans}` humans · `{bots}` bots\n"
-                                f"**Online** `{online}`\n"
+                                f"{online_line}"
                                 f"**Channels** `{len(guild.text_channels)}` text · `{len(guild.voice_channels)}` voice\n"
                                 f"**Roles** `{len(guild.roles)}`\n"
                                 f"**Boosts** `{guild.premium_subscription_count}` (Level `{guild.premium_tier}`)"
