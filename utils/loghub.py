@@ -60,6 +60,109 @@ _chan_cache: dict[tuple[int, str], int] = {}
 # Cache mémoire : guild_id -> set(channel_ids) des salons de logs
 _log_ids_cache: dict[int, set[int]] = {}
 
+# ── Protections anti-boucle / anti-spam ─────────────────────────────────────
+# 1) Pause : pendant /logssetup (création/édition des 18 salons) on ne loggue
+#    pas les événements de salons, sinon on génère des dizaines de messages.
+_pause_depth = 0
+# 2) Débit : au-delà de _RATE_MAX envois en _RATE_WINDOW secondes sur un même
+#    serveur, on coupe les logs 5 minutes. Filet de sécurité absolu : même si un
+#    futur événement créait une boucle, le bot ne peut pas spammer.
+_RATE_WINDOW = 10.0
+_RATE_MAX = 25
+_BREAKER_SECONDS = 300.0
+_rate: dict[int, list[float]] = {}
+_breaker_until: dict[int, float] = {}
+# 3) Doublons : un même contenu vers le même salon à moins de _DEDUP_SECONDS
+#    d'intervalle est ignoré (stoppe net une boucle log→message→log).
+_DEDUP_SECONDS = 3.0
+_last_sent: dict[tuple[int, str, str], float] = {}
+# 4) Threads de secours créés par le hub : ils doivent être reconnus comme
+#    salons de logs (sinon le bot reloggait ses propres logs → boucle infinie).
+_fallback_threads: set[int] = set()
+_PERSIST_THREADS = "log_threads"
+
+
+def pause() -> None:
+    """Suspend l'écriture des logs (compteur : réentrant)."""
+    global _pause_depth
+    _pause_depth += 1
+
+
+def resume() -> None:
+    global _pause_depth
+    _pause_depth = max(0, _pause_depth - 1)
+
+
+def is_paused() -> bool:
+    return _pause_depth > 0
+
+
+def _fallback_thread_ids() -> set[int]:
+    ids = set(_fallback_threads)
+    raw = db.config().get(_PERSIST_THREADS, [])
+    if isinstance(raw, list):
+        for value in raw[-200:]:
+            try:
+                ids.add(int(value))
+            except (TypeError, ValueError):
+                continue
+    return ids
+
+
+def remember_fallback_thread(thread_id: int) -> None:
+    """Mémorise un thread de logs (mode de secours) — persisté en DB."""
+    try:
+        thread_id = int(thread_id)
+    except (TypeError, ValueError):
+        return
+    _fallback_threads.add(thread_id)
+    cfg = db.config()
+    current = cfg.get(_PERSIST_THREADS)
+    if not isinstance(current, list):
+        current = []
+    if thread_id not in [int(v) for v in current if str(v).lstrip("-").isdigit()]:
+        current.append(thread_id)
+    del current[:-200]
+    cfg[_PERSIST_THREADS] = current
+    db.save_config(cfg)
+    _log_ids_cache.clear()
+
+
+def _allow_send(guild_id: int, key: str, content: str) -> bool:
+    """Filet anti-boucle : débit maximal + déduplication."""
+    now = time.monotonic()
+    if now < _breaker_until.get(guild_id, 0.0):
+        return False
+
+    seen = _last_sent.get((guild_id, key, content))
+    if seen is not None and now - seen < _DEDUP_SECONDS:
+        return False
+
+    window = [t for t in _rate.get(guild_id, []) if now - t < _RATE_WINDOW]
+    if len(window) >= _RATE_MAX:
+        # Coupure automatique : quelque chose boucle, on arrête tout 5 minutes.
+        _breaker_until[guild_id] = now + _BREAKER_SECONDS
+        _rate[guild_id] = []
+        logger.error(
+            "Logs: %d messages en moins de %.0f s sur le serveur %s — écriture "
+            "suspendue %.0f s (protection anti-boucle).",
+            len(window), _RATE_WINDOW, guild_id, _BREAKER_SECONDS,
+        )
+        return False
+
+    window.append(now)
+    _rate[guild_id] = window
+    _last_sent[(guild_id, key, content)] = now
+    if len(_last_sent) > 5000:
+        for k in sorted(_last_sent, key=_last_sent.get)[:2500]:
+            _last_sent.pop(k, None)
+    return True
+
+
+def breaker_remaining(guild_id: int) -> float:
+    """Secondes restantes de coupure anti-boucle (0 si aucun)."""
+    return max(0.0, _breaker_until.get(guild_id, 0.0) - time.monotonic())
+
 
 # ── Accès config ─────────────────────────────────────────────────────────────
 
@@ -100,7 +203,12 @@ def save_channel_map(mapping: dict[str, int]) -> None:
 
 
 def log_channel_ids(guild_id: int | None = None) -> set[int]:
-    """IDs de tous les salons de logs (pour ne jamais logger ces salons)."""
+    """IDs de tous les canaux de logs (pour ne **jamais** les logger).
+
+    Inclut : la catégorie, les 18 salons mémorisés, le salon hub (mode de
+    secours) et les threads de secours créés par le hub. Sans les threads, le
+    bot reloggait ses propres logs et bouclait à l'infini.
+    """
     if guild_id is not None:
         cached = _log_ids_cache.get(guild_id)
         if cached is not None:
@@ -109,16 +217,54 @@ def log_channel_ids(guild_id: int | None = None) -> set[int]:
     cid = category_id()
     if cid:
         ids.add(cid)
+    if LOG_HUB_CHANNEL_ID:
+        ids.add(int(LOG_HUB_CHANNEL_ID))
+    ids |= _fallback_thread_ids()
     if guild_id is not None:
         _log_ids_cache[guild_id] = ids
     return ids
 
 
 def is_log_channel(channel) -> bool:
+    """Vrai si ce canal est un canal/thread de logs (donc à ne pas relogger)."""
     try:
-        return int(getattr(channel, "id", 0)) in log_channel_ids()
+        cid = int(getattr(channel, "id", 0) or 0)
     except Exception:
         return False
+    if not cid:
+        return False
+
+    ids = log_channel_ids()
+    if cid in ids:
+        return True
+
+    # Thread d'un salon de logs (ou du hub)
+    parent_id = getattr(channel, "parent_id", None)
+    if parent_id is not None:
+        try:
+            if int(parent_id) in ids:
+                return True
+        except (TypeError, ValueError):
+            pass
+    parent = getattr(channel, "parent", None)
+    if parent is not None:
+        try:
+            if int(getattr(parent, "id", 0) or 0) in ids:
+                return True
+        except Exception:
+            pass
+
+    # Salon (ou thread) rangé dans la catégorie « logs »
+    cid_cat = getattr(channel, "category_id", None)
+    if cid_cat is None:
+        cat = getattr(channel, "category", None)
+        cid_cat = getattr(cat, "id", None)
+    try:
+        if cid_cat is not None and category_id() and int(cid_cat) == category_id():
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
 
 
 # ── Activation / désactivation par type ─────────────────────────────────────
@@ -341,22 +487,28 @@ async def ensure_channels(
 async def _get_thread_fallback(guild: discord.Guild, key: str) -> discord.Thread | None:
     """Ancien mode : un thread par type dans LOG_HUB_CHANNEL_ID."""
     parent = guild.get_channel(LOG_HUB_CHANNEL_ID)
-    if not isinstance(parent, discord.TextChannel):
+    # Duck-typing : tout canal capable de créer des threads fait l'affaire
+    # (TextChannel / ForumChannel…), sans dépendre d'une sous-classe précise.
+    if parent is None or not hasattr(parent, "create_thread"):
         return None
     name = LOG_CHANNELS.get(key, (f"📄・{key}", "", DEFAULT_ACCENT))[0]
     for thread in list(parent.threads):
         if thread.name == name:
+            remember_fallback_thread(thread.id)
             return thread
     try:
         async for thread in parent.archived_threads(limit=50):
             if thread.name == name:
                 await thread.unarchive()
+                remember_fallback_thread(thread.id)
                 return thread
     except Exception:
         pass
     try:
-        return await parent.create_thread(name=name, auto_archive_duration=10080,
-                                          reason="Logs (mode thread)")
+        thread = await parent.create_thread(name=name, auto_archive_duration=10080,
+                                            reason="Logs (mode thread)")
+        remember_fallback_thread(thread.id)
+        return thread
     except Exception as e:
         logger.error("thread fallback %s: %s", key, e)
         return None
@@ -439,10 +591,12 @@ async def log(
     ``queued=True`` : envoi via la file d'attente (événements à fort volume :
     messages, éditions, suppressions) pour ne jamais ralentir le bot.
     """
-    if guild is None or not content:
+    if guild is None or not content or is_paused():
         return
     try:
         if not is_enabled(guild.id, key):
+            return
+        if not _allow_send(guild.id, key, content):
             return
         dest = await get_destination(guild, key)
         if dest is None:

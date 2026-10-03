@@ -193,6 +193,10 @@ class Logs(commands.Cog):
     async def on_message(self, message: discord.Message):
         if not message.guild or loghub.is_log_channel(message.channel):
             return
+        # Anti-boucle : les messages du bot lui-même ne sont jamais loggés
+        # (sinon le log d'un message est un message → log → message → …).
+        if message.author.id == getattr(self.bot.user, "id", 0):
+            return
 
         loghub.bump(
             message.guild.id, "messages",
@@ -245,6 +249,8 @@ class Logs(commands.Cog):
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not before.guild or loghub.is_log_channel(before.channel):
             return
+        if before.author.id == getattr(self.bot.user, "id", 0):
+            return
         if before.content == after.content and before.attachments == after.attachments:
             return
 
@@ -273,6 +279,8 @@ class Logs(commands.Cog):
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
         if not message.guild or loghub.is_log_channel(message.channel):
+            return
+        if message.author.id == getattr(self.bot.user, "id", 0):
             return
 
         loghub.bump(message.guild.id, "deletes", user_id=message.author.id,
@@ -318,7 +326,8 @@ class Logs(commands.Cog):
         if guild is None or loghub.is_log_channel(first.channel):
             return
 
-        humans = [m for m in messages if not m.author.bot]
+        bot_id = getattr(self.bot.user, "id", 0)
+        humans = [m for m in messages if not m.author.bot and m.author.id != bot_id]
         lines = []
         for m in humans[:20]:
             text = _esc(m.content, 120).replace("\n", " ") or "*[pas de texte]*"
@@ -964,6 +973,12 @@ class Logs(commands.Cog):
     @commands.Cog.listener()
     async def on_audit_log_entry_create(self, entry: discord.AuditLogEntry):
         guild = entry.guild
+        # Les actions du bot lui-même sont déjà logguées à la source
+        # (`loghub.mod_action`, `/logssetup`, …) : sans ce filtre, l'installation
+        # des 18 salons générait 20+ entrées d'audit d'un coup.
+        if getattr(entry.user, "id", 0) == getattr(self.bot.user, "id", 0):
+            return
+
         target = ""
         try:
             if isinstance(entry.target, (discord.Member, discord.User)):
@@ -1155,9 +1170,15 @@ class Logs(commands.Cog):
             return
 
         try:
-            mapping, created, reused = await loghub.ensure_channels(
-                guild, recreate=recreer, category_name=nom_categorie[:100] or "logs",
-            )
+            # Pause : la création des 18 salons génère des dizaines d'événements
+            # (salon créé/modifié) qu'il ne faut pas se mettre à logguer.
+            loghub.pause()
+            try:
+                mapping, created, reused = await loghub.ensure_channels(
+                    guild, recreate=recreer, category_name=nom_categorie[:100] or "logs",
+                )
+            finally:
+                loghub.resume()
         except discord.Forbidden:
             await interaction.followup.send(
                 "❌ I need the **Manage Channels** permission to create the log channels.",

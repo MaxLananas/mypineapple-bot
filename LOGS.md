@@ -104,6 +104,10 @@ Tant que la commande n'a pas été lancée, chaque type de log part dans un
 Aucun événement n'est perdu avant l'installation — mais les threads n'ont pas
 les permissions verrouillées de la catégorie `logs`.
 
+Ces threads sont **mémorisés** (en DB) et reconnus comme canaux de logs : le bot
+ne reloggue donc jamais ses propres logs, même dans ce mode de secours
+(c'était la cause de la boucle de spam).
+
 ---
 
 ## 6. Ce qu'il est **techniquement impossible** de capturer
@@ -120,7 +124,34 @@ les permissions verrouillées de la catégorie `logs`.
 
 ---
 
-## 7. Technique
+## 7. Anti-spam / anti-boucle (protections permanentes)
+
+Le risque n°1 d'un système de logs, c'est de **logger ses propres logs** :
+le message de log est un message → il est relogué → boucle infinie.
+Quatre protections indépendantes empêchent ça :
+
+1. **Reconnaissance totale des canaux de logs** — sont ignorés : les 18 salons,
+   la catégorie `logs`, **tout thread dont le parent est un salon de logs ou le
+   salon hub**, tout thread créé par le hub (mémorisé en DB), et tout salon rangé
+   dans la catégorie `logs`. Un salon/thread de logs ne produit donc **jamais**
+   de log, même si son ID a été perdu.
+2. **Le bot ne logge jamais ses propres messages** (`message.author.id == bot.user.id`)
+   pour les messages, éditions, suppressions et suppressions en masse.
+   Les actions du bot ne polluent pas non plus le 🕵️・audit (elles sont déjà
+   journalisées à la source par `/logssetup`, `mod_action`, etc.).
+3. **Déduplication** : un contenu identique vers le même salon à moins de 3 s
+   d'intervalle est ignoré — casse instantanément une boucle serrée.
+4. **Coupe-circuit** : au-delà de **25 envois en 10 secondes** sur un serveur,
+   l'écriture des logs est **suspendue 5 minutes** (erreur écrite dans les logs
+   du bot) puis reprend automatiquement. Même un bug futur ne pourra pas
+   transformer le bot en spammeur.
+
+Pendant `/logssetup`, les logs sont mis **en pause** : la création/édition des
+18 salons ne génère pas des dizaines de messages « salon créé / modifié ».
+
+---
+
+## 8. Technique
 
 | Fichier | Rôle |
 |---------|------|
