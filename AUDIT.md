@@ -92,7 +92,12 @@ réponse arrivait après la création du salon (timeout d'interaction).
 ```
 pyflakes ................. 0 finding
 py_compile ............... tous les .py OK
-chargement des cogs ...... 10/10, 48 commandes, 0 doublon
+chargement des cogs ...... 10/10, 51 commandes, 0 doublon
+guild-only ............... appliqué à toutes les commandes sauf 6 (help, links,
+                           botinfo, ping, 8ball, coinflip)
+listeners de logs ........ 30 événements surveillés
+tests comportementaux .... 48/48 (payloads, permissions, compteurs, toggles)
+tests de démarrage ....... 9/9, tests de régression 8/8
 ```
 
 Simulations exécutées (hors ligne, sans Discord) :
@@ -108,16 +113,54 @@ Simulations exécutées (hors ligne, sans Discord) :
 
 ---
 
-## ⚠️ Points de conception à trancher (pas des bugs techniques)
+## ⚠️ Points de conception laissés tels quels (décision utilisateur)
 
-1. **`/warn` automatique** : 3 avertissements → *kick*, 5 → *ban*. Les
-   avertissements ne sont **pas remis à zéro** après l'action : un membre banni
-   qui revient est banni à nouveau dès 1 nouvel avertissement. À confirmer.
-2. **`utils/settings.py`** n'est importé nulle part : les réglages par serveur
-   (`overrides`) sont du code mort. Soit on le branche, soit on le supprime.
-3. **`/level-rewards` et `/emojis`** n'ont pas de restriction de permission
-   (volontaire ? `/emojis` est réservé aux admins, `/level-rewards` non).
-4. **Intent privilégié `presences`** activé dans le code : il doit l'être aussi
-   dans le portail développeur, sinon le bot refuse de démarrer (erreur 4014).
-5. **Mode DB « salon Discord »** : un snapshot complet est réécrit à chaque flush
-   (max 1 / 30 s) et l'ancien message est supprimé — pense à garder le salon propre.
+1. **`/warn` automatique** : 3 avertissements → *kick*, 5 → *ban*, seuils **non
+   remis à zéro** après l'action → conservé en l'état (« on s'en branle »).
+2. **`utils/settings.py`** (code mort) → conservé.
+3. **`/level-rewards` vs `/emojis`** → permissions inchangées.
+4. **Intent `presences`** → conservé (à activer dans le portail développeur).
+5. **Mode DB « salon Discord »** (snapshot réécrit, ancien message supprimé) → conservé.
+
+---
+
+# 🔍 Audit — deuxième passe (2026-10-03, après le système de logs)
+
+Périmètre supplémentaire : **`cogs/moderation.py`, `cogs/leveling.py`, `cogs/fun.py`,
+`cogs/info.py`, `cogs/profile.py`, `cogs/tickets/*`, `utils/graphs.py`,
+`utils/db.py`, `utils/settings.py`, `scripts/migrate_db.py`** — relecture ligne à
+ligne + 4 nouvelles suites de tests automatisés (48 vérifications comportementales
+sur les listeners de logs, 9 sur le démarrage réel, round-trip de migration, rendu
+des cartes PNG).
+
+## 🐞 Bugs (cachés) corrigés dans cette passe
+
+| # | Fichier | Bug | Impact réel |
+|---|---------|-----|-------------|
+| 25 | `main.py` | `_commands_fingerprint()` appelait `cmd.to_dict()` **sans l'arbre** → `TypeError` attrapé silencieusement | l'empreinte valait toujours `""` : le garde-fou anti-`tree.sync()` était **inopérant**, un sync global partait à chaque démarrage |
+| 26 | `main.py` | Aucune commande n'était marquée « serveur uniquement » (sync **globale**) | `/serverinfo`, `/userinfo`, `/daily`, `/profile`… utilisées en **DM** → `interaction.guild` vaut `None` → `AttributeError` |
+| 27 | `cogs/leveling.py` | `name.split(" ", 1)[1]` sur un nom de rôle sans espace (`name[0]` non alphanumérique) | `/levelroles-setup` plantait avec `IndexError` selon les noms configurés |
+| 28 | `utils/graphs.py` | `int(daily_xp[...])` sur une valeur corrompue | le graphe `/stats` disparaissait silencieusement (valeur non-numérique en DB) |
+| 29 | `cogs/tickets/modals.py` | `CommissionModal` et `PartnershipModal` ne prévenaient pas l'utilisateur en cas d'erreur (`log.error` seul) | « Interaction failed » muet, aucun ticket créé, aucune explication |
+| 30 | `cogs/fun.py` | `prize` et la question du `8ball` n'étaient pas bornées | une option slash de 6000 caractères dépassait la limite de 4000 → erreur 400 |
+| 31 | `cogs/moderation.py` | Aucune action de modération n'alimentait le système de logs (seuls les timeouts étaient vus) | `/ban`, `/kick`, `/warn`, `/purge`… n'apparaissaient pas dans `🔨・modération` |
+| 32 | dépôt | 13 fichiers `__pycache__/*.pyc` (Python 3.14) étaient **versionnés** malgré `.gitignore` | bruit dans chaque diff, binaire inutile dans le dépôt |
+| 33 | `cogs/logs.py` | `on_member_join` pinguait `@everyone` pour les comptes récents et listait les rôles par index (`roles[1:]`) | ping inutile + rôle « @everyone » inclus si l'ordre changeait |
+| 34 | `utils/loghub.py` | `recreate=True` de `/logssetup` était accepté puis **ignoré** | option mensongère : impossible de repartir sur des salons propres |
+
+## ✅ Ce qui a été vérifié (sans bug)
+
+- **Anti-pattern « ACK après REST »** : balayage automatique de toutes les commandes →
+  plus aucune commande ne fait d'appel lent avant `defer()` (hors actions instantanées).
+- **Mentions** : `api_send` force `NO_MENTIONS` par défaut → aucun ping accidentel
+  possible depuis un texte utilisateur (le contournement par `/snipe` est donc fermé).
+- **Pings volontaires** : uniquement via `channel.send(content=mention)` (tickets) et
+  rôles explicites dans les logs de sécurité.
+- **`StringIO` dans `discord.File`** (transcripts) : testé en vrai contre un serveur
+  aiohttp local → **fonctionne** (pas de bug, vérifié plutôt que supposé).
+- **Migration DB** : export SQLite → JSON → SQLite testé de bout en bout
+  (round-trip, 2 lignes, valeurs JSON intactes).
+- **Rendu graphique** : carte de rang (pseudo de 120 caractères, avatar absent,
+  niveau max) et graphe 7 jours (données corrompues) → PNG valides.
+- **`E.*` / `C.*`** : les 25 attributs d'emojis utilisés existent tous.
+- **`/userinfo`, `/leaderboard`, `/warnings`, giveaway** avec DB corrompue : OK.

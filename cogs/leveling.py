@@ -150,8 +150,12 @@ class Leveling(commands.Cog):
                 skipped.append(f"`{level}` {role.mention}")
                 continue
             name = LEVEL_ROLE_NAMES.get(level, f"Level {level}")
-            # Retire l'emoji de tête pour un nom de rôle propre.
-            clean = name.split(" ", 1)[1] if name[0] not in "abcdefghijklmnopqrstuvwxyz0123456789" else name
+            # Retire l'emoji de tête pour un nom de rôle propre. On ne coupe le
+            # premier « mot » que s'il ne contient aucun caractère alphanumérique
+            # (sinon un nom comme « Nova » ou « Boost » ferait planter la commande
+            # avec un IndexError sur split()).
+            head, _, tail = name.partition(" ")
+            clean = tail if tail and not any(ch.isalnum() for ch in head) else name
             color_hex = LEVEL_ROLE_COLORS.get(level, "a0d8ef")
             color = discord.Color(int(color_hex, 16))
             try:

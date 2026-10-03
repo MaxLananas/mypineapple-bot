@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import utils.db as db
+import utils.loghub as loghub
 from utils.api import api_send, MENTIONS_ALL
 from utils.helpers import ts_now, parse_iso
 from utils.antispam import process_message
@@ -97,6 +98,12 @@ class Moderation(commands.Cog):
         })
         await interaction.delete_original_response()
 
+        await loghub.mod_action(
+            interaction.guild, "Bannissement", member, interaction.user,
+            reason=reason, extra=f"**Messages supprimés** `{delete_days} j`",
+            color=0xED4245, thumbnail=str(member.display_avatar.url),
+        )
+
     @app_commands.command(name="kick", description="Kick a member from the server.")
     @app_commands.checks.has_permissions(kick_members=True)
     @app_commands.describe(member="Member to kick.", reason="Reason.")
@@ -155,6 +162,11 @@ class Moderation(commands.Cog):
         })
         await interaction.delete_original_response()
 
+        await loghub.mod_action(
+            interaction.guild, "Expulsion", member, interaction.user,
+            reason=reason, color=0xE67E22, thumbnail=str(member.display_avatar.url),
+        )
+
     @app_commands.command(name="unban", description="Unban a user by ID.")
     @app_commands.checks.has_permissions(ban_members=True)
     @app_commands.describe(user_id="The Discord user ID.", reason="Reason.")
@@ -212,6 +224,10 @@ class Moderation(commands.Cog):
             ],
         })
         await interaction.delete_original_response()
+        await loghub.mod_action(
+            interaction.guild, "Débannissement", user, interaction.user,
+            reason=reason, color=0x57F287, thumbnail=str(user.display_avatar.url),
+        )
 
     @app_commands.command(name="banlist", description="Show the list of banned members.")
     @app_commands.checks.has_permissions(ban_members=True)
@@ -320,6 +336,13 @@ class Moderation(commands.Cog):
         })
         await interaction.delete_original_response()
 
+        await loghub.mod_action(
+            interaction.guild, "Timeout appliqué", member, interaction.user,
+            reason=reason,
+            extra=f"**Durée** `{duration}` · **Expire** <t:{int(until.timestamp())}:F>",
+            color=0xFFA500, thumbnail=str(member.display_avatar.url),
+        )
+
     @app_commands.command(name="unmute", description="Remove a member's timeout.")
     @app_commands.checks.has_permissions(moderate_members=True)
     @app_commands.describe(member="Member.", reason="Reason.")
@@ -333,6 +356,10 @@ class Moderation(commands.Cog):
             )
             return
         await interaction.followup.send(f"✓ Timeout removed for {member.mention}.", ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Timeout retiré", member, interaction.user,
+            reason=reason, color=0x57F287, thumbnail=str(member.display_avatar.url),
+        )
 
     @app_commands.command(name="warn", description="Warn a member.")
     @app_commands.checks.has_permissions(moderate_members=True)
@@ -387,6 +414,11 @@ class Moderation(commands.Cog):
             ],
         })
         await interaction.delete_original_response()
+
+        await loghub.mod_action(
+            interaction.guild, f"Avertissement `#{count}`", member, interaction.user,
+            reason=reason, color=0xFFCC00, thumbnail=str(member.display_avatar.url),
+        )
 
         if count >= 5:
             try:
@@ -457,6 +489,10 @@ class Moderation(commands.Cog):
         data.setdefault(str(interaction.guild_id), {})[str(member.id)] = []
         db.save_warns(data)
         await interaction.response.send_message(f"✓ Warnings cleared for {member.mention}.", ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Avertissements effacés", member, interaction.user,
+            color=0x95A5A6, thumbnail=str(member.display_avatar.url),
+        )
 
     @app_commands.command(name="purge", description="Delete messages in bulk.")
     @app_commands.checks.has_permissions(manage_messages=True)
@@ -503,6 +539,13 @@ class Moderation(commands.Cog):
                     except discord.HTTPException:
                         old_count += 1
 
+        await loghub.mod_action(
+            interaction.guild, "Purge", interaction.channel, interaction.user,
+            reason=f"`{len(deleted)}` message(s) supprimé(s)",
+            extra=f"**Filtre membre** {member.mention}" if member else "",
+            color=0xED4245,
+        )
+
         msg = f"✓ Deleted `{len(deleted)}` message(s)."
         if old_count:
             msg += f"\n⚠️ `{old_count}` message(s) skipped (pinned or older than 14 days)."
@@ -522,6 +565,10 @@ class Moderation(commands.Cog):
             return
         msg = "✓ Slowmode **disabled**." if seconds == 0 else f"✓ Slowmode set to **{seconds}s**."
         await interaction.followup.send(msg, ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Slowmode", interaction.channel, interaction.user,
+            reason=msg.replace("✓ ", ""), color=0x3498DB,
+        )
 
     @app_commands.command(name="lock", description="Lock a channel or thread.")
     @app_commands.checks.has_permissions(manage_channels=True)
@@ -541,6 +588,10 @@ class Moderation(commands.Cog):
             )
             return
         await interaction.followup.send("🔒 Channel locked.", ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Salon verrouillé", interaction.channel, interaction.user,
+            color=0xED4245,
+        )
 
     @app_commands.command(name="unlock", description="Unlock a channel or thread.")
     @app_commands.checks.has_permissions(manage_channels=True)
@@ -560,6 +611,10 @@ class Moderation(commands.Cog):
             )
             return
         await interaction.followup.send("🔓 Channel unlocked.", ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Salon déverrouillé", interaction.channel, interaction.user,
+            color=0x57F287,
+        )
 
     @app_commands.command(name="announce", description="Post a styled announcement.")
     @app_commands.checks.has_permissions(administrator=True)

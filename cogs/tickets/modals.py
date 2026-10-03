@@ -81,7 +81,7 @@ class CommissionModal(discord.ui.Modal, title="Commission Request"):
         await interaction.followup.send(f"Ticket created: {ch.mention}", ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
-        log.error("CommissionModal: %s", error)
+        await _notify_error(interaction, "CommissionModal", error)
 
 
 class BugModal(discord.ui.Modal, title="Bug Report"):
@@ -176,7 +176,7 @@ class PartnershipModal(discord.ui.Modal, title="Partnership Request"):
         await interaction.followup.send(f"Ticket created: {ch.mention}", ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
-        log.error("PartnershipModal: %s", error)
+        await _notify_error(interaction, "PartnershipModal", error)
 
 
 class QuestionModal(discord.ui.Modal, title="General Question"):

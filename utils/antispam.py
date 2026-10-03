@@ -139,6 +139,24 @@ async def _escalate(member: discord.Member) -> None:
 
     log.info("Anti-spam: muted %s for %ss (offense %d)", member, duration, offense)
 
+    # Journalisation « Big Brother » (salon 🚨・sécurité).
+    try:
+        import utils.loghub as loghub
+        await loghub.log(
+            guild, "security",
+            "## 🚨 Anti-spam — sanction\n"
+            f"**Membre** {member.mention} (`{member}` · `{member.id}`)\n"
+            f"**Infraction** `#{offense}`\n"
+            f"**Durée** `{duration // 60} min`\n"
+            f"**Rôles appliqués** "
+            + (muted_role.mention if muted_role else "—")
+            + (f" · {warn_role.mention}" if warn_role else ""),
+            thumbnail=str(member.display_avatar.url),
+        )
+        loghub.bump(guild.id, "spam", user_id=member.id)
+    except Exception as e:
+        log.error("antispam loghub: %s", e)
+
     until = time.time() + duration
     # Persisté : si le bot redémarre, `restore_pending_releases()` reprogramme le
     # retrait des rôles (sinon le rôle "muted" restait appliqué indéfiniment).

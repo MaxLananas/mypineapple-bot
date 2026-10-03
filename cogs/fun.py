@@ -202,7 +202,8 @@ class Fun(commands.Cog):
             entries = [e for e in gw.get("entries", []) if isinstance(e, int)]
             winners = random.sample(entries, min(int(gw.get("winners", 1) or 1), len(entries))) if entries else []
 
-            lines = f"## {E.trophy} GIVEAWAY ENDED\n**Prize:** {gw.get('prize', '?')}\n"
+            prize = str(gw.get("prize", "?"))[:150]
+            lines = f"## {E.trophy} GIVEAWAY ENDED\n**Prize:** {prize}\n"
             if winners:
                 mentions = " ".join(f"<@{w}>" for w in winners)
                 lines += f"**Winner(s):** {mentions}\n{E.confetti} Congratulations!"
@@ -223,6 +224,9 @@ class Fun(commands.Cog):
     @app_commands.command(name="8ball", description="Ask the magic ball a question.")
     @app_commands.describe(question="Your question.")
     async def eightball(self, interaction: discord.Interaction, question: str):
+        # Une option slash peut monter à 6000 caractères : un bloc de texte est
+        # limité à 4000 → on borne ce qui est réaffiché.
+        question = question.strip()[:300]
         colour, answer = random.choice(EIGHTBALL_ANSWERS)
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
@@ -374,6 +378,7 @@ class Fun(commands.Cog):
         duration: str,
         winners: app_commands.Range[int, 1, 10] = 1,
     ):
+        prize = prize.strip()[:150]
         delta = _parse_duration(duration)
         if not delta:
             await interaction.response.send_message(

@@ -32,7 +32,14 @@ def generate_xp_graph(*, username: str, daily_xp: dict[str, int], days: int = 7)
     """Render a 7-day XP bar chart and return PNG bytes."""
     today = datetime.now(timezone.utc).date()
     dates = [today - timedelta(days=d) for d in range(days - 1, -1, -1)]
-    values = [int(daily_xp.get(d.strftime("%Y-%m-%d"), 0)) for d in dates]
+    def _val(day: str) -> int:
+        # Une valeur corrompue en DB ("x", None…) ne doit pas casser le graphe.
+        try:
+            return max(0, int(daily_xp.get(day, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    values = [_val(d.strftime("%Y-%m-%d")) for d in dates]
     max_v = max(values) if any(values) else 1
 
     # Background (ocean gradient).
