@@ -33,6 +33,21 @@ def ts_now() -> int:
     return int(datetime.now(timezone.utc).timestamp())
 
 
+def parse_iso(ts: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp stored in the DB.
+
+    Tolerates ``None``, legacy naive values (assumed UTC) and corrupted strings
+    (returns ``None`` instead of raising — a bad row must never crash a command).
+    """
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 async def safe_add_role(member: discord.Member, role: discord.Role, reason: str = "") -> None:
     try:
         await member.add_roles(role, reason=reason)

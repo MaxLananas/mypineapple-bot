@@ -15,7 +15,6 @@ from utils.helpers import (
 from config import (
     LEVEL_ROLES,
     LEVEL_ROLE_NAMES,
-    LEVEL_ROLE_COLORS,
     NO_XP_ROLE_ID,
     BOOSTER_ROLE_ID,
     BOOSTER_XP_MULTIPLIER,
@@ -107,7 +106,12 @@ async def add_xp(
     if new_level <= old_level:
         return None
 
-    await sync_level_roles(guild, member, new_level)
+    # Rôles : on ne resynchronise QUE si un palier vient d'être franchi. Sinon
+    # `sync_level_roles` ferait ~20 appels REST à chaque montée de niveau, ce
+    # qui pouvait dépasser la fenêtre de 3 s de Discord sur les commandes
+    # (ex. /daily → "404 Unknown interaction").
+    if milestone_roles_crossed(old_level, new_level):
+        await sync_level_roles(guild, member, new_level)
     if channel:
         await send_level_up_message(member, guild, new_level, channel)
     return (old_level, new_level)

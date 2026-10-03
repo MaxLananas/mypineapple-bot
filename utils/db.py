@@ -129,7 +129,8 @@ async def _init_discord():
 
 async def close_db() -> None:
     try:
-        await _flush_all()
+        # force=True : dernier flush garanti même si le précédent date de <30 s.
+        await _flush_all(force=True)
     except Exception as e:
         log.error("close_db flush: %s", e)
     if _backend == "postgres":
@@ -229,7 +230,10 @@ async def _migrate_from_local_sqlite() -> bool:
 
 # ── Flush ────────────────────────────────────────────────────────────────────
 
-async def _flush_all() -> None:
+async def _flush_all(*, force: bool = False) -> None:
+    # force=True : ignore l'intervalle minimum entre deux snapshots Discord.
+    # Indispensable à l'arrêt (close_db), sinon les changements des 30 dernières
+    # secondes étaient silencieusement perdus avec le backend Discord.
     async with _lock:
         dirty = list(_dirty)
         _dirty.clear()
@@ -249,18 +253,18 @@ async def _flush_all() -> None:
                             [(store, k, _json_dumps(v)) for k, v in data.items()],
                         )
     elif _backend == "discord":
-        await _flush_discord(dirty)
+        await _flush_discord(dirty, force=force)
     else:
         for store in dirty:
             await _flush_store_sqlite(store, _cache.get(store, {}))
         await _checkpoint_wal()
 
 
-async def _flush_discord(dirty: list[str]) -> None:
+async def _flush_discord(dirty: list[str], *, force: bool = False) -> None:
     global _discord_last_msg_id, _discord_last_send
 
     now = time.time()
-    if now - _discord_last_send < MIN_SNAPSHOT_INTERVAL:
+    if not force and now - _discord_last_send < MIN_SNAPSHOT_INTERVAL:
         # Remet les stores en "dirty" pour ne pas perdre les changements.
         async with _lock:
             _dirty.update(dirty)
@@ -296,9 +300,7 @@ async def _flush_discord(dirty: list[str]) -> None:
                 if _discord_last_msg_id:
                     # Nettoie l'ancien snapshot (garde le salon propre).
                     try:
-                        async with _http.delete(
-                            f"{url}/{_discord_last_msg_id}"
-                        ) as dr:
+                        async with _http.delete(f"{url}/{_discord_last_msg_id}"):
                             pass
                     except Exception:
                         pass
@@ -349,9 +351,12 @@ async def _checkpoint_wal() -> None:
             log.warning("wal_checkpoint: %s", e)
 
 
-async def flush() -> None:
-    """Flush all pending changes immediately (used on graceful shutdown)."""
-    await _flush_all()
+async def flush(*, force: bool = True) -> None:
+    """Flush all pending changes immediately (used on graceful shutdown).
+
+    ``force`` par défaut : un flush explicite ne doit jamais être ignoré.
+    """
+    await _flush_all(force=force)
 
 
 async def flush_loop() -> None:

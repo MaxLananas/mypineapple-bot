@@ -9,12 +9,14 @@ from discord.ext import commands
 
 import utils.db as db
 from utils.api import api_send, _request_with_backoff
-from utils.helpers import xp_needed, progress_bar, ts_now, MAX_LEVEL
+from utils.helpers import xp_needed, progress_bar, ts_now, parse_iso, MAX_LEVEL
 from utils.leveling import add_xp, level_roles, level_role_name
+from utils.emojis import C
 from config import (
     LOGO_URL,
     PORTFOLIO_FILES, RELEASE_BASE, CREDITS,
     REVIEW_FORUM_ID, WEBSITE_URL, YOUTUBE_URL, INSTAGRAM_URL,
+    MODRINTH_URL, GITHUB_URL, TIKTOK_URL,
     SUPPORT_ROLE_ID,
     REVIEW_TAG_5STARS, REVIEW_TAG_4STARS, REVIEW_TAG_3STARS,
     REVIEW_TAG_2STARS, REVIEW_TAG_1STAR,
@@ -238,7 +240,7 @@ class PortfolioView(discord.ui.View):
         caption = f"Collaboration: {credit_info['label']}" if credit_info else "Personal build"
 
         embed = discord.Embed(
-            title=f"🏗️ Portfolio — MaxLananas",
+            title="🏗️ Portfolio — MaxLananas",
             description=(
                 f"**{self.total_builds} builds** · page **{self.page + 1}/{len(self.entries)}**\n"
                 f"-# {caption}"
@@ -248,7 +250,14 @@ class PortfolioView(discord.ui.View):
         embed.set_image(url=RELEASE_BASE + entry["name"])
         embed.add_field(
             name="🔗 Links",
-            value=f"[Website]({WEBSITE_URL}) · [YouTube]({YOUTUBE_URL}) · [Instagram]({INSTAGRAM_URL})",
+            value="\n".join((
+                f"{C.website} [Website]({WEBSITE_URL})",
+                f"{C.youtube} [YouTube]({YOUTUBE_URL})",
+                f"{C.instagram} [Instagram]({INSTAGRAM_URL})",
+                f"{C.modrinth} [Modrinth]({MODRINTH_URL})",
+                f"{C.github} [GitHub]({GITHUB_URL})",
+                f"{C.tiktok} [TikTok]({TIKTOK_URL})",
+            )),
             inline=False,
         )
         embed.add_field(name="🤝 Collaborations", value=self.collab_text, inline=False)
@@ -439,16 +448,21 @@ class Profile(commands.Cog):
         guild_id = str(interaction.guild_id)
         user_id  = str(target.id)
 
-        ud     = data.get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
-        level  = ud["level"]
-        xp     = ud["xp"]
+        ud     = data.get(guild_id, {}).get(user_id, {})
+        level  = int(ud.get("level", 0) or 0)
+        xp     = int(ud.get("xp", 0) or 0)
         is_max = level >= MAX_LEVEL
         needed = xp_needed(level)
         bar    = progress_bar(xp, needed)
         pct    = 100 if is_max else (int((xp / needed) * 100) if needed else 0)
 
+        def _lvl(entry) -> tuple[int, int]:
+            if not isinstance(entry, dict):
+                return (0, 0)
+            return (int(entry.get("level", 0) or 0), int(entry.get("xp", 0) or 0))
+
         all_u   = data.get(guild_id, {})
-        sorted_ = sorted(all_u.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
+        sorted_ = sorted(all_u.items(), key=lambda x: _lvl(x[1]), reverse=True)
         rank_n  = next((i + 1 for i, (uid, _) in enumerate(sorted_) if uid == user_id), "?")
 
         role_name = None
@@ -522,6 +536,11 @@ class Profile(commands.Cog):
 
     @app_commands.command(name="daily", description="Claim your daily XP reward.")
     async def daily(self, interaction: discord.Interaction):
+        # ⚠️ ACK IMMÉDIAT : add_xp() peut prendre > 3 s (rôles + message de
+        # level-up). Déferrer après coup faisait expirer le token de
+        # l'interaction → "404 Not Found (10062): Unknown interaction".
+        await interaction.response.defer(ephemeral=True)
+
         now      = datetime.now(timezone.utc)
         guild_id = str(interaction.guild_id)
         user_id  = str(interaction.user.id)
@@ -532,17 +551,21 @@ class Profile(commands.Cog):
         })
 
         last_str = user_data.get("last_claim")
-        if last_str:
-            last = datetime.fromisoformat(last_str)
+        last     = parse_iso(last_str)
+        if last is not None:
             diff = (now - last).total_seconds()
             if diff < 86400:
-                remaining = int(86400 - diff)
+                remaining = max(0, int(86400 - diff))
                 h, m = divmod(remaining // 60, 60)
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"⏳ Come back in **{h}h {m}m** for your next daily!", ephemeral=True
                 )
                 return
-            streak = user_data["streak"] + 1 if diff < 172800 else 1
+            try:
+                prev_streak = int(user_data.get("streak", 0) or 0)
+            except (TypeError, ValueError):
+                prev_streak = 0
+            streak = prev_streak + 1 if diff < 172800 else 1
         else:
             streak = 1
 
@@ -572,7 +595,6 @@ class Profile(commands.Cog):
             streak_bonus = " 🔥 **+20% streak bonus!**"
 
         ts = ts_now()
-        await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
@@ -618,13 +640,16 @@ class Profile(commands.Cog):
 
         data      = db.daily()
         user_data = data.get(guild_id, {}).get(user_id, {})
-        streak    = user_data.get("streak", 0)
-        last_str  = user_data.get("last_claim")
+        try:
+            streak = int(user_data.get("streak", 0) or 0)
+        except (TypeError, ValueError):
+            streak = 0
+        last_dt   = parse_iso(user_data.get("last_claim"))
         total     = user_data.get("total_claims", 0)
 
         last_text = (
-            f"Last daily: <t:{int(datetime.fromisoformat(last_str).timestamp())}:R>"
-            if last_str else "No daily claimed yet."
+            f"Last daily: <t:{int(last_dt.timestamp())}:R>"
+            if last_dt else "No daily claimed yet."
         )
         filled = min(streak, 7)
         bar    = "🔥" * filled + "⬜" * (7 - filled)

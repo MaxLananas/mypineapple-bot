@@ -69,8 +69,15 @@ _EMOJI_CACHE_MAX = 64
 
 
 def _codepoint(emoji: str) -> str:
-    """Convert an emoji to its Twemoji codepoint (variation selectors/ZWJ stripped)."""
-    return "-".join(f"{ord(c):x}" for c in emoji if c not in "\ufe0f\u200d")
+    """Convert an emoji to its Twemoji filename codepoint sequence.
+
+    Twemoji drops the VS16 (``fe0f``) for simple emojis (``🗑️`` → ``1f5d1.png``)
+    but keeps it inside ZWJ sequences (``🧜‍♂️`` → ``1f9dc-200d-2642-fe0f.png``).
+    Getting this wrong made those emojis silently disappear from the rank card.
+    """
+    if "\u200d" in emoji:
+        return "-".join(f"{ord(c):x}" for c in emoji)
+    return "-".join(f"{ord(c):x}" for c in emoji if c != "\ufe0f")
 
 
 async def _fetch_emoji(session, emoji: str) -> Image.Image | None:

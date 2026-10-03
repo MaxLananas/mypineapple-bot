@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
-from PIL import Image, ImageDraw
+from PIL import ImageDraw
 
-from utils.images import _font, _vgradient, _rounded_mask
+from utils.images import _font, _vgradient
 
 log = logging.getLogger(__name__)
 

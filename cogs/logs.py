@@ -1,12 +1,11 @@
 from __future__ import annotations
 import logging
 import time
-from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
 
-from utils.api import api_send, media_gallery, get_session
+from utils.api import api_send, media_gallery, get_session, MENTIONS_ALL
 from utils.helpers import ts_now
 from config import LOG_HUB_CHANNEL_ID, SUPPORT_ROLE_ID
 
@@ -110,6 +109,7 @@ async def _log(
     *,
     gallery: list[str] | list[tuple[str, str | None]] | None = None,
     thumbnail: str | None = None,
+    mentions: dict | None = None,
 ) -> None:
     thread = await _get_or_create_thread(guild, key)
     if not thread:
@@ -129,12 +129,18 @@ async def _log(
         inner.append(media_gallery(gallery))
 
     try:
-        await api_send(thread.id, {
-            "flags": 32768,
-            "components": [
-                {"type": 17, "accent_color": accent, "components": inner}
-            ],
-        })
+        await api_send(
+            thread.id,
+            {
+                "flags": 32768,
+                "components": [
+                    {"type": 17, "accent_color": accent, "components": inner}
+                ],
+            },
+            # Sans ça, NO_MENTIONS (défaut) empêche tout ping — ex. l'alerte
+            # "nouveau compte" ne notifiait jamais le staff.
+            allowed_mentions=mentions,
+        )
     except Exception as e:
         log.error("_log(%s): %s", key, e)
 
@@ -251,6 +257,8 @@ class Logs(commands.Cog):
             + ("**⚠️ NEW ACCOUNT (< 24h)** — possible alt / raid." + staff_ping + "\n" if new_acc else "")
             + f"**At** <t:{ts}:F>",
             thumbnail=str(member.display_avatar.url),
+            # Sans ceci le ping staff ne fonctionnait pas (NO_MENTIONS par défaut).
+            mentions=MENTIONS_ALL if new_acc else None,
         )
 
     @commands.Cog.listener()
@@ -330,10 +338,17 @@ class Logs(commands.Cog):
             profile = await _fetch_profile(after.id)
             if not profile:
                 break
-            prev = _user_meta_cache.get(after.id, {})
             banner = profile.get("banner")
             bio = profile.get("bio")
             accent = profile.get("accent_color")
+
+            prev = _user_meta_cache.get(after.id)
+            if prev is None:
+                # Premier passage depuis le démarrage : on mémorise l'état sans
+                # comparer, sinon on logguait un faux "Bio/Banner changed" à
+                # chaque restart (ancien état inconnu = {}).
+                _user_meta_cache[after.id] = {"banner": banner, "bio": bio, "accent": accent}
+                break
 
             if banner and banner != prev.get("banner"):
                 await _log(
@@ -581,7 +596,7 @@ class Logs(commands.Cog):
         if not changes:
             return
         await _log(before, "server", 0x9B8EC4,
-            f"## ⚙️ Server Updated\n" + "\n".join(changes) + f"\n**At** <t:{ts}:F>")
+            "## ⚙️ Server Updated\n" + "\n".join(changes) + f"\n**At** <t:{ts}:F>")
 
     @commands.Cog.listener()
     async def on_guild_emojis_update(self, guild: discord.Guild, before: list, after: list):

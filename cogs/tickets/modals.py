@@ -13,6 +13,23 @@ from .constants import _is_valid_url
 log = logging.getLogger(__name__)
 
 
+async def _notify_error(interaction: discord.Interaction, label: str, error: Exception) -> None:
+    """Prévient l'utilisateur qu'un ticket n'a pas pu être créé.
+
+    Sans ça, une exception dans on_submit laissait le modal sur
+    "Interaction failed" sans aucune explication.
+    """
+    log.error("%s: %s", label, error)
+    msg = "❌ Something went wrong — your ticket could not be created. Please try again."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
 class CommissionModal(discord.ui.Modal, title="Commission Request"):
     need = discord.ui.TextInput(
         label="What do you need?",
@@ -113,7 +130,7 @@ class BugModal(discord.ui.Modal, title="Bug Report"):
         await interaction.followup.send(f"Ticket created: {ch.mention}", ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
-        log.error("BugModal: %s", error)
+        await _notify_error(interaction, "BugModal", error)
 
 
 class PartnershipModal(discord.ui.Modal, title="Partnership Request"):
@@ -187,7 +204,7 @@ class QuestionModal(discord.ui.Modal, title="General Question"):
         await interaction.followup.send(f"Ticket created: {ch.mention}", ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
-        log.error("QuestionModal: %s", error)
+        await _notify_error(interaction, "QuestionModal", error)
 
 
 _MODAL_MAP = {

@@ -19,12 +19,22 @@ import argparse
 import asyncio
 import json
 import os
+import pathlib
 import sys
 
 import aiosqlite
 
 TABLE = "kv_store"
-STORES = ["levels", "tickets", "config", "daily", "warns", "ticketlogs"]
+
+# Liste des stores = source unique de vérité dans utils/db.py. L'import évite
+# d'oublier un store lors d'une migration (c'était le cas de "stats" et
+# "closedtickets"). Fallback si le script est lancé hors du dépôt.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+try:
+    from utils.db import STORES  # noqa: E402
+except Exception:  # pragma: no cover
+    STORES = ["levels", "tickets", "config", "daily", "warns", "ticketlogs",
+              "stats", "closedtickets"]
 
 
 async def _read_sqlite(path: str) -> list[tuple[str, str, str]]:

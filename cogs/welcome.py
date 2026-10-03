@@ -116,7 +116,7 @@ class Welcome(commands.Cog):
             build_caption = None
 
         emoji, phrase = random.choice(WELCOME_MESSAGES)
-        member_cnt    = guild.member_count
+        member_cnt    = guild.member_count or 0
         created_ts    = int(member.created_at.timestamp())
         join_ts       = ts_now()
 

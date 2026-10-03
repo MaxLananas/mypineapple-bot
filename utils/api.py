@@ -138,7 +138,6 @@ async def init_session(token: str) -> None:
 
 
 async def close_session() -> None:
-    global _session
     if _session and not _session.closed:
         await _session.close()
         log.info("aiohttp session closed.")

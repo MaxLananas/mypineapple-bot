@@ -9,7 +9,7 @@ from discord.ext import commands
 
 import utils.db as db
 from utils.api import api_send, MENTIONS_ALL
-from utils.helpers import ts_now
+from utils.helpers import ts_now, parse_iso
 from utils.antispam import process_message
 
 log = logging.getLogger(__name__)
@@ -47,17 +47,23 @@ class Moderation(commands.Cog):
         reason: str = "No reason provided.",
         delete_days: app_commands.Range[int, 0, 7] = 0,
     ):
+        # ACK immédiat : member.ban() est un appel REST qui peut dépasser la
+        # fenêtre de 3 s → sinon "Unknown interaction".
+        await interaction.response.defer(ephemeral=True)
+        reason = reason[:500]  # option slash jusqu'à 6000 car. → 400 côté Discord
+
         if member.top_role >= interaction.user.top_role:
-            await interaction.response.send_message("You cannot ban this member.", ephemeral=True)
+            await interaction.followup.send("You cannot ban this member.", ephemeral=True)
             return
         try:
             await member.ban(reason=f"{interaction.user} — {reason}", delete_message_days=delete_days)
-        except discord.Forbidden:
-            await interaction.response.send_message("I lack permission to ban this member.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't ban this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
             return
 
         ts = ts_now()
-        await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
@@ -100,17 +106,22 @@ class Moderation(commands.Cog):
         member: discord.Member,
         reason: str = "No reason provided.",
     ):
+        # ACK immédiat (member.kick() est un appel REST).
+        await interaction.response.defer(ephemeral=True)
+        reason = reason[:500]
+
         if member.top_role >= interaction.user.top_role:
-            await interaction.response.send_message("You cannot kick this member.", ephemeral=True)
+            await interaction.followup.send("You cannot kick this member.", ephemeral=True)
             return
         try:
             await member.kick(reason=f"{interaction.user} — {reason}")
-        except discord.Forbidden:
-            await interaction.response.send_message("I lack permission to kick this member.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't kick this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
             return
 
         ts = ts_now()
-        await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
@@ -253,22 +264,28 @@ class Moderation(commands.Cog):
         duration: str,
         reason: str = "No reason provided.",
     ):
+        # ACK immédiat : member.timeout() est un appel REST.
+        await interaction.response.defer(ephemeral=True)
+        reason = reason[:500]
+
         delta = parse_duration(duration)
         if not delta:
-            await interaction.response.send_message("Invalid duration. Examples: `10m`, `2h`, `7d`.", ephemeral=True)
+            await interaction.followup.send(
+                "Invalid duration. Examples: `10m`, `2h`, `7d`.", ephemeral=True
+            )
             return
         if delta > timedelta(days=28):
-            await interaction.response.send_message("Maximum duration: 28 days.", ephemeral=True)
+            await interaction.followup.send("Maximum duration: 28 days.", ephemeral=True)
             return
         try:
             until = datetime.now(timezone.utc) + delta
             await member.timeout(until, reason=f"{interaction.user} — {reason}")
-        except discord.Forbidden:
-            await interaction.response.send_message("I lack permission.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't mute this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
             return
 
-        ts = ts_now()
-        await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
@@ -307,17 +324,21 @@ class Moderation(commands.Cog):
     @app_commands.checks.has_permissions(moderate_members=True)
     @app_commands.describe(member="Member.", reason="Reason.")
     async def unmute(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
+        await interaction.response.defer(ephemeral=True)
         try:
             await member.timeout(None, reason=f"{interaction.user} — {reason}")
-        except discord.Forbidden:
-            await interaction.response.send_message("I lack permission.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't remove the timeout (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
             return
-        await interaction.response.send_message(f"✓ Timeout removed for {member.mention}.", ephemeral=True)
+        await interaction.followup.send(f"✓ Timeout removed for {member.mention}.", ephemeral=True)
 
     @app_commands.command(name="warn", description="Warn a member.")
     @app_commands.checks.has_permissions(moderate_members=True)
     @app_commands.describe(member="Member.", reason="Reason for the warning.")
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+        reason = reason[:1000]  # une option slash peut monter à 6000 car. → 400 côté Discord
         data = db.warns()
         guild_id = str(interaction.guild_id)
         user_id = str(member.id)
@@ -389,10 +410,18 @@ class Moderation(commands.Cog):
             await interaction.response.send_message(f"{member.mention} has no warnings.", ephemeral=True)
             return
 
+        # On n'affiche que les 15 dernières avec des raisons bornées : un membre
+        # très warn faisait dépasser la limite de 4000 caractères par bloc.
+        shown = warns_list[-15:]
+        offset = len(warns_list) - len(shown)
         lines = []
-        for i, w in enumerate(warns_list, 1):
-            dt = datetime.fromisoformat(w["at"])
-            lines.append(f"`#{i}` <t:{int(dt.timestamp())}:d> — {w['reason']}")
+        for i, w in enumerate(shown, offset + 1):
+            dt    = parse_iso(w.get("at"))
+            stamp = f"<t:{int(dt.timestamp())}:d>" if dt else "`date inconnue`"
+            reason = str(w.get("reason", "No reason provided"))[:150]
+            lines.append(f"`#{i}` {stamp} — {reason}")
+        if offset:
+            lines.insert(0, f"-# … {offset} earlier warning(s) hidden")
 
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
@@ -483,33 +512,54 @@ class Moderation(commands.Cog):
     @app_commands.checks.has_permissions(manage_channels=True)
     @app_commands.describe(seconds="Seconds (0 = disabled, max 21600).")
     async def slowmode(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 21600]):
-        await interaction.channel.edit(slowmode_delay=seconds)
-        msg = f"✓ Slowmode **disabled**." if seconds == 0 else f"✓ Slowmode set to **{seconds}s**."
-        await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.channel.edit(slowmode_delay=seconds)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't change the slowmode (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
+            return
+        msg = "✓ Slowmode **disabled**." if seconds == 0 else f"✓ Slowmode set to **{seconds}s**."
+        await interaction.followup.send(msg, ephemeral=True)
 
     @app_commands.command(name="lock", description="Lock a channel or thread.")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def lock(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
-        if isinstance(channel, discord.Thread):
-            await channel.edit(locked=True)
-        else:
-            overwrite = channel.overwrites_for(interaction.guild.default_role)
-            overwrite.send_messages = False
-            await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        await interaction.response.send_message("🔒 Channel locked.", ephemeral=True)
+        try:
+            if isinstance(channel, discord.Thread):
+                await channel.edit(locked=True)
+            else:
+                overwrite = channel.overwrites_for(interaction.guild.default_role)
+                overwrite.send_messages = False
+                await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't lock this channel (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
+            return
+        await interaction.followup.send("🔒 Channel locked.", ephemeral=True)
 
     @app_commands.command(name="unlock", description="Unlock a channel or thread.")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def unlock(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
-        if isinstance(channel, discord.Thread):
-            await channel.edit(locked=False)
-        else:
-            overwrite = channel.overwrites_for(interaction.guild.default_role)
-            overwrite.send_messages = None
-            await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        await interaction.response.send_message("🔓 Channel unlocked.", ephemeral=True)
+        try:
+            if isinstance(channel, discord.Thread):
+                await channel.edit(locked=False)
+            else:
+                overwrite = channel.overwrites_for(interaction.guild.default_role)
+                overwrite.send_messages = None
+                await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't unlock this channel (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
+            return
+        await interaction.followup.send("🔓 Channel unlocked.", ephemeral=True)
 
     @app_commands.command(name="announce", description="Post a styled announcement.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -529,6 +579,9 @@ class Moderation(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
         ts = ts_now()
+        # Bornes Discord : un "text display" est limité à 4000 caractères.
+        title   = title[:200]
+        message = message[:3500]
 
         ping_text = ""
         if ping:

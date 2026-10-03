@@ -112,8 +112,10 @@ class Leveling(commands.Cog):
 
     @tasks.loop(seconds=VOICE_XP_INTERVAL)
     async def voice_xp_loop(self):
-        try:
-            for guild in self.bot.guilds:
+        # try/except PAR SERVEUR : une erreur sur un serveur ne doit pas
+        # empêcher les autres de recevoir leur XP vocal.
+        for guild in self.bot.guilds:
+            try:
                 afk_id = guild.afk_channel.id if guild.afk_channel else None
                 for vc in guild.voice_channels:
                     if vc.id == afk_id:
@@ -123,8 +125,8 @@ class Leveling(commands.Cog):
                             continue
                         bump_stat(guild, member, "voice_seconds", VOICE_XP_INTERVAL)
                         await add_xp(guild=guild, member=member, amount=VOICE_XP_AMOUNT)
-        except Exception as e:
-            log.error("voice_xp_loop: %s", e)
+            except Exception as e:
+                log.error("voice_xp_loop (%s): %s", guild.id, e)
 
     @voice_xp_loop.before_loop
     async def _before_voice_loop(self):
@@ -180,7 +182,7 @@ class Leveling(commands.Cog):
         for level in sorted(LEVEL_ROLES):
             role_id = int(db_roles.get(str(level), LEVEL_ROLES[level]))
             role = guild.get_role(role_id)
-            mention = role.mention if role else f"*(missing)*"
+            mention = role.mention if role else "*(missing)*"
             lines.append(f"`Lv {level:>3}` — {mention}")
 
         await interaction.response.defer(ephemeral=True)
@@ -191,7 +193,7 @@ class Leveling(commands.Cog):
                     "type": 17,
                     "accent_color": 0xC3B1E1,
                     "components": [
-                        {"type": 10, "content": f"## 🏆 Level Rewards\nAll milestones (5 → 100)."},
+                        {"type": 10, "content": "## 🏆 Level Rewards\nAll milestones (5 → 100)."},
                         {"type": 14, "divider": True, "spacing": 1},
                         {"type": 10, "content": "\n".join(lines)},
                     ],
@@ -211,7 +213,7 @@ class Leveling(commands.Cog):
         reason: str = "Reward",
     ):
         await interaction.response.defer(ephemeral=True)
-        result = await add_xp(
+        await add_xp(
             guild=interaction.guild,
             member=member,
             amount=amount,
