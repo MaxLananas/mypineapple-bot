@@ -6,8 +6,21 @@ import discord
 log = logging.getLogger(__name__)
 
 
+MAX_LEVEL = 100
+
+
 def xp_for_level(level: int) -> int:
+    """XP required to advance *from* `level` to `level + 1`."""
     return 5 * (level ** 2) + 50 * level + 100
+
+
+def xp_needed(level: int, max_level: int = MAX_LEVEL) -> int:
+    """XP required to reach the next level, or 0 once at max level.
+
+    Fixes the level-100 off-by-one: ``xp_for_level(100)`` targets a nonexistent
+    level 101, so displays must treat max level as "fully progressed".
+    """
+    return 0 if level >= max_level else xp_for_level(level)
 
 
 def progress_bar(current: int, needed: int, length: int = 12) -> str:
