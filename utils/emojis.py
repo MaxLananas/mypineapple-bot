@@ -123,6 +123,25 @@ class _E:
 E = _E()
 
 
+class _Custom:
+    """Emojis custom du serveur (IDs fixes, uploadés par l'admin).
+
+    Contrairement à ``E`` (unicode), ces emojis ne s'affichent que si le bot les
+    connaît : ils sont donc référencés en dur sous la forme ``<:nom:id>``.
+    Utilisation : ``from utils.emojis import C`` puis ``C.modrinth``.
+    """
+    discord   = "<:emoji_44:1555976835752272052>"
+    instagram = "<:DPJqh3xa92JHF6RnNAqOTLyL735RtVap:1556012609499566191>"
+    tiktok    = "<:C6RrzAIWx4R04ZRaj4SFouEnubhfT4eP:1556013527070941234>"
+    youtube   = "<:emoji_40:1555975578170032158>"
+    website   = "<:emoji_41:1555975607760982036>"
+    modrinth  = "<:emoji_42:1555975629873348659>"
+    github    = "<:emoji_43:1555975649103970304>"
+
+
+C = _Custom()
+
+
 def all_emojis() -> list[str]:
     """Liste des emojis uniques disponibles (utile pour la doc / help)."""
     seen, out = set(), []

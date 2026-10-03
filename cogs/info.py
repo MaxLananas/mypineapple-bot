@@ -10,12 +10,13 @@ from discord.ext import commands
 import utils.db as db
 from utils.api import api_send, get_session
 from utils.helpers import xp_needed, MAX_LEVEL
-from utils.emojis import E
+from utils.emojis import E, C
 from utils.leveling import level_roles, level_role_name, daily_xp_history
 from utils.images import generate_rank_card
 from utils.graphs import generate_xp_graph
 from config import (
     LOGO_URL, DISCORD_INVITE, INSTAGRAM_URL, WEBSITE_URL, YOUTUBE_URL,
+    MODRINTH_URL, GITHUB_URL, TIKTOK_URL,
 )
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,19 @@ class Info(commands.Cog):
 
     @app_commands.command(name="links", description="Display official MyPineapple links.")
     async def links(self, interaction: discord.Interaction):
+        # Un réseau par bloc, avec l'emoji custom associé et une ligne vide
+        # entre chaque pour aérer le rendu.
+        entries = (
+            (C.discord,   "Discord",   DISCORD_INVITE),
+            (C.instagram, "Instagram", INSTAGRAM_URL),
+            (C.youtube,   "YouTube",   YOUTUBE_URL),
+            (C.website,   "Website",   WEBSITE_URL),
+            (C.modrinth,  "Modrinth",  MODRINTH_URL),
+            (C.github,    "GitHub",    GITHUB_URL),
+            (C.tiktok,    "TikTok",    TIKTOK_URL),
+        )
+        links_block = "\n\n".join(f"{emoji} **{name}** — {url}" for emoji, name, url in entries)
+
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
@@ -75,15 +89,7 @@ class Info(commands.Cog):
                             "accessory": {"type": 11, "media": {"url": LOGO_URL}},
                         },
                         {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 10,
-                            "content": (
-                                f"**Discord** — {DISCORD_INVITE}\n"
-                                f"**Instagram** — {INSTAGRAM_URL}\n"
-                                f"**Website** — {WEBSITE_URL}\n"
-                                f"**YouTube** — {YOUTUBE_URL}"
-                            ),
-                        },
+                        {"type": 10, "content": links_block},
                         {"type": 14, "divider": True, "spacing": 1},
                         {"type": 10, "content": "-# ✦ Stay connected with MyPineapple 🍍"},
                     ],

@@ -15,6 +15,9 @@ DISCORD_INVITE = "https://discord.gg/pnJhKuU2QK"
 INSTAGRAM_URL  = "https://www.instagram.com/maxlananas.builds/"
 WEBSITE_URL    = "https://maxlananas.is-a.dev/"
 YOUTUBE_URL    = "https://www.youtube.com/@MaxLanana"
+MODRINTH_URL   = "https://modrinth.com/user/maxlananass"
+GITHUB_URL     = "https://github.com/MaxLananas"
+TIKTOK_URL     = "https://www.tiktok.com/@maxlananas2"
 
 TICKET_CATEGORY_ID    = 1518728726421180676
 TICKET_LOG_CHANNEL_ID = 1525589088969822300
