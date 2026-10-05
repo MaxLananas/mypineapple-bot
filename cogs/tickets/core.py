@@ -16,7 +16,6 @@ from utils.emojis import E
 from config import (
     LOGO_URL,
     TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID, SUPPORT_ROLE_ID,
-    CLIENT_ROLE_ID,
 )
 
 from . import state
@@ -41,6 +40,16 @@ async def _do_close_ticket(
     tickets = db.tickets()
     info    = tickets.get(str(channel.id), {})
     ts      = ts_now()
+
+    if not info:
+        # Sécurité : ne JAMAIS supprimer un salon qui n'est pas un ticket suivi
+        # (ex. bouton resté dans un vieux salon, base restaurée…).
+        log.warning("Close requested on untracked channel %s (%s)", channel.name, channel.id)
+        if interaction:
+            await interaction.followup.send(
+                "This channel is not a tracked ticket.", ephemeral=True
+            )
+        return
 
     logs = db.ticketlogs().get(str(channel.id), [])
     # Robust fallback: if in-memory logs are empty (restart, purge...),
@@ -160,20 +169,42 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
         )
         return
 
+    # ACK immédiat : créer le salon + envoyer plusieurs messages dépasse
+    # facilement les 3 s de la fenêtre d'interaction.
+    await interaction.response.defer(ephemeral=True)
+
     guild = interaction.guild
     opener_id = info.get("opener_id")
-    opener = guild.get_member(opener_id) or await guild.fetch_member(opener_id)
+    opener = guild.get_member(opener_id)
+    if opener is None:
+        try:
+            opener = await guild.fetch_member(opener_id)
+        except discord.HTTPException:
+            opener = None
+    if opener is None:
+        await interaction.followup.send(
+            "The member who opened this ticket is no longer on the server.", ephemeral=True
+        )
+        return
 
     category = guild.get_channel(TICKET_CATEGORY_ID)
     overwrites = _build_overwrites(guild, opener)
 
     name = info.get("name") or f"{info.get('type', 'ticket')}-{number:04d}"
-    channel = await guild.create_text_channel(
-        name=name,
-        category=category,
-        overwrites=overwrites,
-        topic=f"{info.get('type')} | {opener} ({opener.id}) | reopened",
-    )
+    try:
+        channel = await guild.create_text_channel(
+            name=name,
+            category=category,
+            overwrites=overwrites,
+            topic=f"{info.get('type')} | {opener} ({opener.id}) | reopened",
+        )
+    except discord.HTTPException as e:
+        log.error("reopen create_text_channel: %s", e)
+        await interaction.followup.send(
+            f"I couldn't recreate the ticket channel (`{getattr(e, 'status', 'error')}`).",
+            ephemeral=True,
+        )
+        return
 
     tickets = db.tickets()
     tickets[str(channel.id)] = {
@@ -210,7 +241,7 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
     })
     await channel.send(content=opener.mention, view=CloseTicketView())
 
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"{E.check} Ticket `#{number}` reopened in {channel.mention}.", ephemeral=True
     )
 
@@ -468,12 +499,18 @@ class Tickets(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
+        delivery_message = delivery_message[:3500]  # limite des blocs de texte
 
-        opener_id   = info.get("opener_id")
-        ts          = ts_now()
-        guild       = interaction.guild
-        opener      = guild.get_member(opener_id) or await guild.fetch_member(opener_id)
-        client_role = guild.get_role(CLIENT_ROLE_ID)
+        opener_id = info.get("opener_id")
+        ts        = ts_now()
+        guild     = interaction.guild
+        opener    = guild.get_member(opener_id)
+        if opener is None:
+            try:
+                opener = await guild.fetch_member(opener_id)
+            except discord.HTTPException:
+                opener = None  # a quitté le serveur → on continue sans DM
+        opener_mention = opener.mention if opener else "the client"
 
         delivery_components = [
             {
@@ -487,7 +524,7 @@ class Tickets(commands.Cog):
                                 "type": 10,
                                 "content": (
                                     f"## ✅ Commission Delivered!\n"
-                                    f"Your commission has been completed, {opener.mention}."
+                                    f"Your commission has been completed, {opener_mention}."
                                 ),
                             }
                         ],
@@ -569,7 +606,7 @@ class Tickets(commands.Cog):
                 log.warning("Cannot DM %s, DMs disabled.", opener)
 
         await interaction.followup.send(
-            f"✓ Delivery message sent. Ticket closing in 10 seconds…", ephemeral=True
+            "✓ Delivery message sent. Ticket closing in 10 seconds…", ephemeral=True
         )
         await asyncio.sleep(10)
         await _do_close_ticket(channel, interaction.user)

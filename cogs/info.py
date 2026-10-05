@@ -10,12 +10,13 @@ from discord.ext import commands
 import utils.db as db
 from utils.api import api_send, get_session
 from utils.helpers import xp_needed, MAX_LEVEL
-from utils.emojis import E
+from utils.emojis import E, C
 from utils.leveling import level_roles, level_role_name, daily_xp_history
 from utils.images import generate_rank_card
 from utils.graphs import generate_xp_graph
 from config import (
     LOGO_URL, DISCORD_INVITE, INSTAGRAM_URL, WEBSITE_URL, YOUTUBE_URL,
+    MODRINTH_URL, GITHUB_URL, TIKTOK_URL,
 )
 
 log = logging.getLogger(__name__)
@@ -29,13 +30,20 @@ def _rank_data(interaction: discord.Interaction, target: discord.Member) -> dict
     guild_id = str(interaction.guild_id)
     user_id = str(target.id)
 
-    ud = data.get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
-    level = ud["level"]
-    xp = ud["xp"]
+    # `.get` partout : une entrée corrompue dans la DB ne doit pas faire planter
+    # la commande (KeyError).
+    ud = data.get(guild_id, {}).get(user_id, {})
+    level = int(ud.get("level", 0) or 0)
+    xp    = int(ud.get("xp", 0) or 0)
     needed = xp_needed(level)
 
+    def _lvl(entry) -> tuple[int, int]:
+        if not isinstance(entry, dict):
+            return (0, 0)
+        return (int(entry.get("level", 0) or 0), int(entry.get("xp", 0) or 0))
+
     all_u = data.get(guild_id, {})
-    sorted_ = sorted(all_u.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)
+    sorted_ = sorted(all_u.items(), key=lambda x: _lvl(x[1]), reverse=True)
     rank_n = next((i + 1 for i, (uid, _) in enumerate(sorted_) if uid == user_id), 1)
 
     role_name = None
@@ -56,6 +64,19 @@ class Info(commands.Cog):
 
     @app_commands.command(name="links", description="Display official MyPineapple links.")
     async def links(self, interaction: discord.Interaction):
+        # Un réseau par bloc, avec l'emoji custom associé et une ligne vide
+        # entre chaque pour aérer le rendu.
+        entries = (
+            (C.discord,   "Discord",   DISCORD_INVITE),
+            (C.instagram, "Instagram", INSTAGRAM_URL),
+            (C.youtube,   "YouTube",   YOUTUBE_URL),
+            (C.website,   "Website",   WEBSITE_URL),
+            (C.modrinth,  "Modrinth",  MODRINTH_URL),
+            (C.github,    "GitHub",    GITHUB_URL),
+            (C.tiktok,    "TikTok",    TIKTOK_URL),
+        )
+        links_block = "\n\n".join(f"{emoji} **{name}** — {url}" for emoji, name, url in entries)
+
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
@@ -75,15 +96,7 @@ class Info(commands.Cog):
                             "accessory": {"type": 11, "media": {"url": LOGO_URL}},
                         },
                         {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 10,
-                            "content": (
-                                f"**Discord** — {DISCORD_INVITE}\n"
-                                f"**Instagram** — {INSTAGRAM_URL}\n"
-                                f"**Website** — {WEBSITE_URL}\n"
-                                f"**YouTube** — {YOUTUBE_URL}"
-                            ),
-                        },
+                        {"type": 10, "content": links_block},
                         {"type": 14, "divider": True, "spacing": 1},
                         {"type": 10, "content": "-# ✦ Stay connected with MyPineapple 🍍"},
                     ],
@@ -147,15 +160,16 @@ class Info(commands.Cog):
         roles = [r.mention for r in reversed(target.roles) if r.name != "@everyone"]
         rt = " ".join(roles[:8]) + (f" +{len(roles)-8}" if len(roles) > 8 else "") if roles else "None"
 
-        ud = db.levels().get(str(interaction.guild_id), {}).get(str(target.id), {"xp": 0, "level": 0})
-        level = ud["level"]
+        ud    = db.levels().get(str(interaction.guild_id), {}).get(str(target.id), {})
+        level = int(ud.get("level", 0) or 0)
+        xp    = int(ud.get("xp", 0) or 0)
         role_name = None
         for ms in sorted(level_roles(), reverse=True):
             if level >= ms:
                 role_name = level_role_name(ms)
                 break
 
-        level_line = f"**Level** `{level}` · **XP** `{ud['xp']}`"
+        level_line = f"**Level** `{level}` · **XP** `{xp}`"
         if role_name:
             level_line += f" · {role_name}"
 
@@ -354,9 +368,9 @@ class Info(commands.Cog):
         m, s = divmod(rem, 60)
         voice_text = f"{h}h {m}m {s}s" if voice_s else "0m"
 
-        ud    = db.levels().get(guild_id, {}).get(user_id, {"xp": 0, "level": 0})
-        level = ud["level"]
-        xp    = ud["xp"]
+        ud    = db.levels().get(guild_id, {}).get(user_id, {})
+        level = int(ud.get("level", 0) or 0)
+        xp    = int(ud.get("xp", 0) or 0)
 
         await interaction.response.defer(ephemeral=True)
 
@@ -447,20 +461,26 @@ class Info(commands.Cog):
             await interaction.response.send_message("No data yet.", ephemeral=True)
             return
 
-        sorted_ = sorted(all_u.items(), key=lambda x: (x[1]["level"], x[1]["xp"]), reverse=True)[:10]
+        def _lvl(entry) -> tuple[int, int]:
+            if not isinstance(entry, dict):
+                return (0, 0)
+            return (int(entry.get("level", 0) or 0), int(entry.get("xp", 0) or 0))
+
+        sorted_ = sorted(all_u.items(), key=lambda x: _lvl(x[1]), reverse=True)[:10]
         medals = ["🥇", "🥈", "🥉"]
         lines = []
         for i, (uid, ud) in enumerate(sorted_):
             badge = medals[i] if i < 3 else f"`#{i+1}`"
             m = interaction.guild.get_member(int(uid))
             name = m.display_name if m else f"User {uid}"
+            level = _lvl(ud)[0]
             role_name = None
             for ms in sorted(level_roles(), reverse=True):
-                if ud["level"] >= ms:
+                if level >= ms:
                     role_name = level_role_name(ms)
                     break
             suffix = f" · *{role_name}*" if role_name else ""
-            lines.append(f"{badge} **{name}** — Level `{ud['level']}`{suffix}")
+            lines.append(f"{badge} **{name}** — Level `{level}`{suffix}")
 
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {

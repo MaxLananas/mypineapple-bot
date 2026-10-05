@@ -14,7 +14,10 @@ LOGO_URL = (
 DISCORD_INVITE = "https://discord.gg/pnJhKuU2QK"
 INSTAGRAM_URL  = "https://www.instagram.com/maxlananas.builds/"
 WEBSITE_URL    = "https://maxlananas.is-a.dev/"
-YOUTUBE_URL    = "https://www.youtube.com/@MaxLanana"
+YOUTUBE_URL    = "https://www.youtube.com/@MaxLananass"
+MODRINTH_URL   = "https://modrinth.com/user/maxlananass"
+GITHUB_URL     = "https://github.com/MaxLananas"
+TIKTOK_URL     = "https://www.tiktok.com/@maxlananas2"
 
 TICKET_CATEGORY_ID    = 1518728726421180676
 TICKET_LOG_CHANNEL_ID = 1525589088969822300
@@ -22,6 +25,9 @@ NO_XP_CHANNEL_ID      = 1525598251015868466
 WELCOME_CHANNEL_ID    = 1518717925144526980
 REVIEW_FORUM_ID       = 1540774649347186789
 LOG_HUB_CHANNEL_ID    = 1521230854007951500
+# Mode de secours : si `/logssetup` n'a pas encore été lancé, les logs partent
+# dans des threads de ce salon. Sinon, ils vont dans la catégorie privée.
+LOG_ACCESS_ROLE_ID    = 1518719020084236378   # SEUL rôle autorisé à voir les logs
 DB_CHANNEL_ID         = int(os.environ.get("DB_CHANNEL_ID", 1545613510816301056))  # salon de sauvegarde DB
 
 SUPPORT_ROLE_ID = 1186432110752448574

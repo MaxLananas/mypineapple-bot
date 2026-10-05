@@ -39,7 +39,9 @@ class CloseReasonView(discord.ui.View):
         reason = select.values[0]
         await interaction.response.defer(ephemeral=True)
         from .core import _do_close_ticket  # local import to avoid circularity
-        await _do_close_ticket(interaction.channel, interaction.user, reason=reason)
+        # On transmet l'interaction : _do_close_ticket répond via followup, sinon
+        # l'éphémère "réfléchit…" restait bloqué pour l'utilisateur.
+        await _do_close_ticket(interaction.channel, interaction.user, interaction, reason=reason)
 
 
 class ReopenView(discord.ui.View):

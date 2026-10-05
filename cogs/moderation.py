@@ -8,8 +8,9 @@ from discord import app_commands
 from discord.ext import commands
 
 import utils.db as db
+import utils.loghub as loghub
 from utils.api import api_send, MENTIONS_ALL
-from utils.helpers import ts_now
+from utils.helpers import ts_now, parse_iso
 from utils.antispam import process_message
 
 log = logging.getLogger(__name__)
@@ -47,17 +48,23 @@ class Moderation(commands.Cog):
         reason: str = "No reason provided.",
         delete_days: app_commands.Range[int, 0, 7] = 0,
     ):
+        # ACK immédiat : member.ban() est un appel REST qui peut dépasser la
+        # fenêtre de 3 s → sinon "Unknown interaction".
+        await interaction.response.defer(ephemeral=True)
+        reason = reason[:500]  # option slash jusqu'à 6000 car. → 400 côté Discord
+
         if member.top_role >= interaction.user.top_role:
-            await interaction.response.send_message("You cannot ban this member.", ephemeral=True)
+            await interaction.followup.send("You cannot ban this member.", ephemeral=True)
             return
         try:
             await member.ban(reason=f"{interaction.user} — {reason}", delete_message_days=delete_days)
-        except discord.Forbidden:
-            await interaction.response.send_message("I lack permission to ban this member.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't ban this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
             return
 
         ts = ts_now()
-        await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
@@ -91,6 +98,12 @@ class Moderation(commands.Cog):
         })
         await interaction.delete_original_response()
 
+        await loghub.mod_action(
+            interaction.guild, "Bannissement", member, interaction.user,
+            reason=reason, extra=f"**Messages supprimés** `{delete_days} j`",
+            color=0xED4245, thumbnail=str(member.display_avatar.url),
+        )
+
     @app_commands.command(name="kick", description="Kick a member from the server.")
     @app_commands.checks.has_permissions(kick_members=True)
     @app_commands.describe(member="Member to kick.", reason="Reason.")
@@ -100,17 +113,22 @@ class Moderation(commands.Cog):
         member: discord.Member,
         reason: str = "No reason provided.",
     ):
+        # ACK immédiat (member.kick() est un appel REST).
+        await interaction.response.defer(ephemeral=True)
+        reason = reason[:500]
+
         if member.top_role >= interaction.user.top_role:
-            await interaction.response.send_message("You cannot kick this member.", ephemeral=True)
+            await interaction.followup.send("You cannot kick this member.", ephemeral=True)
             return
         try:
             await member.kick(reason=f"{interaction.user} — {reason}")
-        except discord.Forbidden:
-            await interaction.response.send_message("I lack permission to kick this member.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't kick this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
             return
 
         ts = ts_now()
-        await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
@@ -143,6 +161,11 @@ class Moderation(commands.Cog):
             ],
         })
         await interaction.delete_original_response()
+
+        await loghub.mod_action(
+            interaction.guild, "Expulsion", member, interaction.user,
+            reason=reason, color=0xE67E22, thumbnail=str(member.display_avatar.url),
+        )
 
     @app_commands.command(name="unban", description="Unban a user by ID.")
     @app_commands.checks.has_permissions(ban_members=True)
@@ -201,6 +224,10 @@ class Moderation(commands.Cog):
             ],
         })
         await interaction.delete_original_response()
+        await loghub.mod_action(
+            interaction.guild, "Débannissement", user, interaction.user,
+            reason=reason, color=0x57F287, thumbnail=str(user.display_avatar.url),
+        )
 
     @app_commands.command(name="banlist", description="Show the list of banned members.")
     @app_commands.checks.has_permissions(ban_members=True)
@@ -253,22 +280,28 @@ class Moderation(commands.Cog):
         duration: str,
         reason: str = "No reason provided.",
     ):
+        # ACK immédiat : member.timeout() est un appel REST.
+        await interaction.response.defer(ephemeral=True)
+        reason = reason[:500]
+
         delta = parse_duration(duration)
         if not delta:
-            await interaction.response.send_message("Invalid duration. Examples: `10m`, `2h`, `7d`.", ephemeral=True)
+            await interaction.followup.send(
+                "Invalid duration. Examples: `10m`, `2h`, `7d`.", ephemeral=True
+            )
             return
         if delta > timedelta(days=28):
-            await interaction.response.send_message("Maximum duration: 28 days.", ephemeral=True)
+            await interaction.followup.send("Maximum duration: 28 days.", ephemeral=True)
             return
         try:
             until = datetime.now(timezone.utc) + delta
             await member.timeout(until, reason=f"{interaction.user} — {reason}")
-        except discord.Forbidden:
-            await interaction.response.send_message("I lack permission.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't mute this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
             return
 
-        ts = ts_now()
-        await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
             "flags": 32768,
             "components": [
@@ -303,21 +336,36 @@ class Moderation(commands.Cog):
         })
         await interaction.delete_original_response()
 
+        await loghub.mod_action(
+            interaction.guild, "Timeout appliqué", member, interaction.user,
+            reason=reason,
+            extra=f"**Durée** `{duration}` · **Expire** <t:{int(until.timestamp())}:F>",
+            color=0xFFA500, thumbnail=str(member.display_avatar.url),
+        )
+
     @app_commands.command(name="unmute", description="Remove a member's timeout.")
     @app_commands.checks.has_permissions(moderate_members=True)
     @app_commands.describe(member="Member.", reason="Reason.")
     async def unmute(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
+        await interaction.response.defer(ephemeral=True)
         try:
             await member.timeout(None, reason=f"{interaction.user} — {reason}")
-        except discord.Forbidden:
-            await interaction.response.send_message("I lack permission.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't remove the timeout (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
             return
-        await interaction.response.send_message(f"✓ Timeout removed for {member.mention}.", ephemeral=True)
+        await interaction.followup.send(f"✓ Timeout removed for {member.mention}.", ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Timeout retiré", member, interaction.user,
+            reason=reason, color=0x57F287, thumbnail=str(member.display_avatar.url),
+        )
 
     @app_commands.command(name="warn", description="Warn a member.")
     @app_commands.checks.has_permissions(moderate_members=True)
     @app_commands.describe(member="Member.", reason="Reason for the warning.")
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+        reason = reason[:1000]  # une option slash peut monter à 6000 car. → 400 côté Discord
         data = db.warns()
         guild_id = str(interaction.guild_id)
         user_id = str(member.id)
@@ -367,6 +415,11 @@ class Moderation(commands.Cog):
         })
         await interaction.delete_original_response()
 
+        await loghub.mod_action(
+            interaction.guild, f"Avertissement `#{count}`", member, interaction.user,
+            reason=reason, color=0xFFCC00, thumbnail=str(member.display_avatar.url),
+        )
+
         if count >= 5:
             try:
                 await member.ban(reason="5 accumulated warnings")
@@ -389,10 +442,18 @@ class Moderation(commands.Cog):
             await interaction.response.send_message(f"{member.mention} has no warnings.", ephemeral=True)
             return
 
+        # On n'affiche que les 15 dernières avec des raisons bornées : un membre
+        # très warn faisait dépasser la limite de 4000 caractères par bloc.
+        shown = warns_list[-15:]
+        offset = len(warns_list) - len(shown)
         lines = []
-        for i, w in enumerate(warns_list, 1):
-            dt = datetime.fromisoformat(w["at"])
-            lines.append(f"`#{i}` <t:{int(dt.timestamp())}:d> — {w['reason']}")
+        for i, w in enumerate(shown, offset + 1):
+            dt    = parse_iso(w.get("at"))
+            stamp = f"<t:{int(dt.timestamp())}:d>" if dt else "`date inconnue`"
+            reason = str(w.get("reason", "No reason provided"))[:150]
+            lines.append(f"`#{i}` {stamp} — {reason}")
+        if offset:
+            lines.insert(0, f"-# … {offset} earlier warning(s) hidden")
 
         await interaction.response.defer(ephemeral=True)
         await api_send(interaction.channel.id, {
@@ -428,6 +489,10 @@ class Moderation(commands.Cog):
         data.setdefault(str(interaction.guild_id), {})[str(member.id)] = []
         db.save_warns(data)
         await interaction.response.send_message(f"✓ Warnings cleared for {member.mention}.", ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Avertissements effacés", member, interaction.user,
+            color=0x95A5A6, thumbnail=str(member.display_avatar.url),
+        )
 
     @app_commands.command(name="purge", description="Delete messages in bulk.")
     @app_commands.checks.has_permissions(manage_messages=True)
@@ -474,6 +539,13 @@ class Moderation(commands.Cog):
                     except discord.HTTPException:
                         old_count += 1
 
+        await loghub.mod_action(
+            interaction.guild, "Purge", interaction.channel, interaction.user,
+            reason=f"`{len(deleted)}` message(s) supprimé(s)",
+            extra=f"**Filtre membre** {member.mention}" if member else "",
+            color=0xED4245,
+        )
+
         msg = f"✓ Deleted `{len(deleted)}` message(s)."
         if old_count:
             msg += f"\n⚠️ `{old_count}` message(s) skipped (pinned or older than 14 days)."
@@ -483,33 +555,66 @@ class Moderation(commands.Cog):
     @app_commands.checks.has_permissions(manage_channels=True)
     @app_commands.describe(seconds="Seconds (0 = disabled, max 21600).")
     async def slowmode(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 21600]):
-        await interaction.channel.edit(slowmode_delay=seconds)
-        msg = f"✓ Slowmode **disabled**." if seconds == 0 else f"✓ Slowmode set to **{seconds}s**."
-        await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.channel.edit(slowmode_delay=seconds)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't change the slowmode (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
+            return
+        msg = "✓ Slowmode **disabled**." if seconds == 0 else f"✓ Slowmode set to **{seconds}s**."
+        await interaction.followup.send(msg, ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Slowmode", interaction.channel, interaction.user,
+            reason=msg.replace("✓ ", ""), color=0x3498DB,
+        )
 
     @app_commands.command(name="lock", description="Lock a channel or thread.")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def lock(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
-        if isinstance(channel, discord.Thread):
-            await channel.edit(locked=True)
-        else:
-            overwrite = channel.overwrites_for(interaction.guild.default_role)
-            overwrite.send_messages = False
-            await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        await interaction.response.send_message("🔒 Channel locked.", ephemeral=True)
+        try:
+            if isinstance(channel, discord.Thread):
+                await channel.edit(locked=True)
+            else:
+                overwrite = channel.overwrites_for(interaction.guild.default_role)
+                overwrite.send_messages = False
+                await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't lock this channel (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
+            return
+        await interaction.followup.send("🔒 Channel locked.", ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Salon verrouillé", interaction.channel, interaction.user,
+            color=0xED4245,
+        )
 
     @app_commands.command(name="unlock", description="Unlock a channel or thread.")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def unlock(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
-        if isinstance(channel, discord.Thread):
-            await channel.edit(locked=False)
-        else:
-            overwrite = channel.overwrites_for(interaction.guild.default_role)
-            overwrite.send_messages = None
-            await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        await interaction.response.send_message("🔓 Channel unlocked.", ephemeral=True)
+        try:
+            if isinstance(channel, discord.Thread):
+                await channel.edit(locked=False)
+            else:
+                overwrite = channel.overwrites_for(interaction.guild.default_role)
+                overwrite.send_messages = None
+                await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"I couldn't unlock this channel (`{getattr(e, 'status', 'error')}`).", ephemeral=True
+            )
+            return
+        await interaction.followup.send("🔓 Channel unlocked.", ephemeral=True)
+        await loghub.mod_action(
+            interaction.guild, "Salon déverrouillé", interaction.channel, interaction.user,
+            color=0x57F287,
+        )
 
     @app_commands.command(name="announce", description="Post a styled announcement.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -529,6 +634,9 @@ class Moderation(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
         ts = ts_now()
+        # Bornes Discord : un "text display" est limité à 4000 caractères.
+        title   = title[:200]
+        message = message[:3500]
 
         ping_text = ""
         if ping:

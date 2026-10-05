@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import logging.handlers
 import os
 import signal
 import sys
-import time
 import traceback
 
 import discord
 from discord.ext import commands
 
 import utils.db as db
+import utils.antispam as antispam
 from utils.api import (
     init_session,
     close_session,
@@ -98,18 +99,112 @@ async def _load_cogs() -> None:
             log.error("Cannot load %s: %s", cog, res)
         else:
             log.info("Cog loaded: %s", cog)
+    _enforce_guild_only()
+
+
+# Commandes volontairement utilisables en message privé. Toutes les autres sont
+# marquées « serveur uniquement » : sans ça, une utilisation en DM fait planter
+# la commande (`interaction.guild` vaut None → AttributeError).
+DM_ALLOWED = {"help", "links", "botinfo", "ping", "8ball", "coinflip"}
+
+
+def _enforce_guild_only() -> None:
+    """Force ``dm_permission=False`` sur les commandes qui exigent un serveur."""
+    count = 0
+    for cmd in bot.tree.get_commands():
+        if cmd.name in DM_ALLOWED or getattr(cmd, "guild_only", False):
+            continue
+        cmd.guild_only = True
+        count += 1
+    if count:
+        log.info("Guild-only enforced on %d command(s).", count)
+
+
+# Empreinte des slash-commands stockée en DB : on ne resynchronise que si le
+# jeu de commandes a réellement changé.
+SYNC_HASH_KEY = "command_sync_hash"
+
+
+def _commands_fingerprint() -> str:
+    """Empreinte (nom + description + options) de toutes les commandes.
+
+    ``to_dict()`` exige l'arbre en paramètre (API discord.py 2.x) : oublier
+    l'argument levait un TypeError attrapé plus haut, ce qui rendait le
+    garde-fou inopérant et déclenchait un ``tree.sync()`` à chaque démarrage.
+    """
+    payload = sorted(
+        json.dumps(cmd.to_dict(bot.tree), sort_keys=True, default=str)
+        for cmd in bot.tree.get_commands()
+    )
+    return hashlib.sha256("|".join(payload).encode("utf-8")).hexdigest()
+
+
+async def _sync_commands_if_needed() -> None:
+    """Synchronise les slash-commands uniquement si nécessaire.
+
+    ``on_ready`` est rappelé à chaque reconnexion complète ; un ``tree.sync()``
+    global à chaque fois peut épuiser le quota Discord (les commandes globales
+    sont limitées). On compare donc une empreinte persistée en DB.
+    """
+    digest = ""
+    try:
+        digest = _commands_fingerprint()
+        if digest and db.config().get(SYNC_HASH_KEY) == digest:
+            log.info("Slash commands unchanged — skipping sync.")
+            return
+    except Exception as e:
+        log.warning("command fingerprint: %s", e)
+
+    try:
+        synced = await bot.tree.sync()
+        log.info("Slash commands synced: %d command(s).", len(synced))
+    except Exception as e:
+        log.error("tree.sync failed: %s", e)
+        return
+
+    if digest:
+        try:
+            cfg = db.config()
+            cfg[SYNC_HASH_KEY] = digest
+            db.save_config(cfg)
+        except Exception as e:
+            log.warning("cannot persist sync hash: %s", e)
 
 
 @bot.event
 async def on_ready():
     log.info("Connected as %s — %d guild(s)", bot.user, len(bot.guilds))
+    await _sync_commands_if_needed()
+
+    # 🤖 Salon de logs « bot » : premier démarrage et reconnexions.
     try:
-        # Sync global + per guild (faster/more reliable in dev). No systematic
-        # re-sync: only when a new command is registered.
-        synced = await bot.tree.sync()
-        log.info("Slash commands synced: %d command(s).", len(synced))
+        import utils.loghub as loghub
+        first = not getattr(bot, "_boot_logged", False)
+        bot._boot_logged = True
+        if first:
+            humans = sum(1 for g in bot.guilds for m in g.members if not m.bot)
+            total = sum(g.member_count or 0 for g in bot.guilds)
+            snapshot = loghub.counters_snapshot()
+            await loghub.broadcast(
+                "bot",
+                "## 🤖 Bot démarré\n"
+                f"**Compte** {bot.user} (`{getattr(bot.user, 'id', '?')}`)\n"
+                f"**Serveurs** `{len(bot.guilds)}` · **Membres** `{total}` "
+                f"(humains `{humans}`)\n"
+                f"**Commandes** `{len(bot.tree.get_commands())}` · "
+                f"**Latence** `{round(bot.latency * 1000)} ms`\n"
+                f"**Logs** `{snapshot['configured']}/{snapshot['channels']}` salons "
+                + ("installés ✅" if snapshot["installed"] else "— `/logssetup` à lancer ⚠️"),
+            )
+        else:
+            await loghub.broadcast(
+                "bot",
+                "## 🔄 Reconnexion\n"
+                f"**Latence** `{round(bot.latency * 1000)} ms` · "
+                f"**Serveurs** `{len(bot.guilds)}`",
+            )
     except Exception as e:
-        log.error("tree.sync failed: %s", e)
+        log.warning("boot log: %s", e)
 
 
 @bot.event
@@ -147,7 +242,17 @@ async def on_app_command_error(
 @bot.event
 async def on_error(event: str, *args, **kwargs):
     # Capture unhandled event exceptions (listeners) without crashing.
-    log.error("Unhandled event error in '%s':\n%s", event, traceback.format_exc())
+    tb = traceback.format_exc()
+    log.error("Unhandled event error in '%s':\n%s", event, tb)
+    try:
+        import utils.loghub as loghub
+        await loghub.broadcast(
+            "bot",
+            f"## ⚠️ Erreur non gérée — `{event}`\n```py\n{tb[-1400:]}\n```",
+            accent=0xED4245,
+        )
+    except Exception:
+        pass
 
 
 def _install_signal_handlers() -> None:
@@ -193,6 +298,13 @@ async def main() -> None:
         await db.init_db()
         await _load_cogs()
         bot.loop.create_task(db.flush_loop())
+
+        # Rôles anti-spam à retirer suite à un restart (cf. utils/antispam.py).
+        antispam.set_bot(bot)
+        try:
+            await antispam.restore_pending_releases()
+        except Exception as e:
+            log.error("antispam restore: %s", e)
 
         try:
             await bot.start(TOKEN)
