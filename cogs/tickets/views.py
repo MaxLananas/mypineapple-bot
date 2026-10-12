@@ -3,6 +3,72 @@ from __future__ import annotations
 import discord
 
 from utils.emojis import E
+from .constants import (
+    DEFAULT_LANG, TICKET_LANG_BUTTON_ID, TICKET_UI,
+)
+
+
+class TicketLangView(discord.ui.View):
+    """Bouton « changer la langue » du message d'accueil d'un ticket.
+
+    Une seule vue persistante pour tous les tickets (le ``custom_id`` est fixe) :
+    c'est la base de données qui garde la langue courante de chaque salon.
+    Le bouton traduit **tout le message du bot** (titre, guide, mentions
+    d'ouverture) pour tout le monde, et son libellé bascule en même temps.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Français",
+        emoji="🇫🇷",
+        style=discord.ButtonStyle.secondary,
+        custom_id=TICKET_LANG_BUTTON_ID,
+    )
+    async def switch_lang(self, interaction: discord.Interaction, button: discord.ui.Button):
+        import logging
+
+        import utils.db as db
+        from utils.api import api_edit
+
+        log = logging.getLogger(__name__)
+        tickets = db.tickets()
+        info = tickets.get(str(interaction.channel_id))
+        if not info:
+            await interaction.response.send_message(
+                "This channel is not a tracked ticket.", ephemeral=True
+            )
+            return
+
+        current = info.get("lang") or DEFAULT_LANG
+        target = TICKET_UI.get(current, TICKET_UI[DEFAULT_LANG])["switch_to"]
+
+        # L'édition du message passe par l'API brute (components v2) : on
+        # acquitte tout de suite pour ne pas dépasser les 3 s règlementaires.
+        await interaction.response.defer()
+
+        info = {**info, "lang": target}
+        tickets[str(interaction.channel_id)] = info
+        db.save_tickets(tickets)
+
+        from .constants import build_ticket_intro
+
+        payload = {
+            "flags": 32768,
+            "components": build_ticket_intro(
+                info.get("type", "question"),
+                target,
+                info.get("number"),
+                info.get("opener_id") or interaction.user.id,
+                info.get("opened_ts") or 0,
+            ),
+        }
+        message_id = getattr(interaction.message, "id", None)
+        if message_id:
+            status, resp = await api_edit(interaction.channel_id, message_id, payload)
+            if status not in (200, 201):
+                log.error("ticket lang toggle: %s %s", status, resp)
 
 
 class CloseTicketView(discord.ui.View):

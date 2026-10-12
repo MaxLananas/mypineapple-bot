@@ -20,12 +20,11 @@ from config import (
 
 from . import state
 from .constants import (
-    _is_valid_url, TICKET_CLOSE_REASONS, TICKET_TYPES,
-    _next_ticket_number, _build_overwrites,
+    DEFAULT_LANG, LANGS, TICKET_BUTTONS, TICKET_CLOSE_REASONS, TICKET_TYPES,
+    _build_overwrites, _is_valid_url, _next_ticket_number, build_ticket_intro,
 )
 from .transcript import _history_to_logs, _transcript_html, _transcript_txt
-from .views import CloseTicketView, ReopenView
-from .modals import _MODAL_MAP, _gate_ticket
+from .views import CloseTicketView, ReopenView, TicketLangView
 
 log = logging.getLogger(__name__)
 
@@ -206,11 +205,15 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
         )
         return
 
+    ts_open = ts_now()
+    lang = info.get("lang") if info.get("lang") in LANGS else DEFAULT_LANG
     tickets = db.tickets()
     tickets[str(channel.id)] = {
         "type":       info.get("type"),
         "opener_id":  opener.id,
         "number":     number,
+        "lang":       lang,
+        "opened_ts":  ts_open,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "name":       name,
     }
@@ -219,7 +222,6 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
     del closed[str(number)]
     db.save_closedtickets(closed)
 
-    ts = ts_now()
     await api_send(channel.id, {
         "flags": 32768,
         "components": [
@@ -232,12 +234,19 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
                         "content": (
                             f"## 🔓 Ticket Reopened\n"
                             f"Ticket `#{number}` has been reopened.\n"
-                            f"**Opened by** {opener.mention}\n**At** <t:{ts}:F>"
+                            f"**Opened by** {opener.mention}\n**At** <t:{ts_open}:F>"
                         ),
                     }
                 ],
             }
         ],
+    })
+    # Le message-guide est renvoyé en haut du salon (avec son bouton de langue).
+    await api_send(channel.id, {
+        "flags": 32768,
+        "components": build_ticket_intro(
+            info.get("type") or "question", lang, number, opener.id, ts_open
+        ),
     })
     await channel.send(content=opener.mention, view=CloseTicketView())
 
@@ -249,14 +258,20 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
 async def _create_ticket(
     interaction: discord.Interaction,
     kind:        str,
-    body:        str,
-    image_url:   str | None,
+    *,
+    lang:        str = DEFAULT_LANG,
 ) -> discord.TextChannel:
+    """Crée le salon du ticket et y poste le message-guide bilingue.
+
+    Plus de formulaire (modal) : le salon s'ouvre directement, le bot explique
+    en haut ce qu'il faut indiquer, et l'utilisateur écrit sa demande dessous.
+    """
     guild        = interaction.guild
     member       = interaction.user
     category     = guild.get_channel(TICKET_CATEGORY_ID)
     support_role = guild.get_role(SUPPORT_ROLE_ID)
     type_info    = TICKET_TYPES[kind]
+    ts           = ts_now()
 
     overwrites = _build_overwrites(guild, member)
 
@@ -275,6 +290,8 @@ async def _create_ticket(
         "opener_id":  member.id,
         "number":     number,
         "name":       name,
+        "lang":       lang if lang in LANGS else DEFAULT_LANG,
+        "opened_ts":  ts,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     db.save_tickets(tickets)
@@ -291,36 +308,16 @@ async def _create_ticket(
     ]
     db.save_ticketlogs(tlogs)
 
-    ts = ts_now()
-    components_inner = [
-        {
-            "type": 9,
-            "components": [{"type": 10, "content": type_info["header"]}],
-            "accessory": {"type": 11, "media": {"url": LOGO_URL}},
-        },
-        {"type": 14, "divider": True, "spacing": 1},
-        {"type": 10, "content": body},
-    ]
-
-    if image_url:
-        components_inner.append({
-            "type": 12,
-            "items": [{"media": {"url": image_url}, "description": "Attached reference"}],
-        })
-
-    components_inner += [
-        {"type": 14, "divider": True, "spacing": 1},
-        {
-            "type": 10,
-            "content": f"**Ticket** `#{number}`\n**Opened by** {member.mention}\n**Opened at** <t:{ts}:F>",
-        },
-    ]
-
+    ticket_info = tickets[str(channel.id)]
     await api_send(channel.id, {
         "flags": 32768,
-        "components": [
-            {"type": 17, "accent_color": type_info["accent"], "components": components_inner}
-        ],
+        "components": build_ticket_intro(
+            kind,
+            ticket_info["lang"],
+            number,
+            member.id,
+            ts,
+        ),
     })
 
     ping = member.mention + (f" {support_role.mention}" if support_role else "")
@@ -354,11 +351,52 @@ async def _create_ticket(
     return channel
 
 
+async def _open_ticket(interaction: discord.Interaction, kind: str) -> None:
+    """Clic sur un bouton du panel → le salon du ticket est créé directement.
+
+    Remplace l'ancien flux « modal » : plus de formulaire à remplir, le bot
+    poste un message-guide (EN par défaut, bouton FR) et l'utilisateur écrit
+    sa demande dans le salon.
+    """
+    uid = interaction.user.id
+
+    # Un seul ticket ouvert par type et par membre (comme avant).
+    for info in db.tickets().values():
+        if info.get("opener_id") == uid and info.get("type") == kind:
+            await interaction.response.send_message(
+                "You already have an open ticket of this type. "
+                "Close it before opening a new one.",
+                ephemeral=True,
+            )
+            return
+
+    # Créer le salon + y poster plusieurs messages dépasse les 3 s : on accuse
+    # réception tout de suite, puis on répond en followup.
+    await interaction.response.defer(ephemeral=True)
+
+    label = TICKET_TYPES.get(kind, {}).get("label", kind.capitalize())
+    try:
+        channel = await _create_ticket(interaction, kind)
+    except discord.HTTPException as e:
+        log.error("open %s ticket: %s", kind, e)
+        await interaction.followup.send(
+            f"❌ I couldn't create the {label} ticket "
+            f"(`{getattr(e, 'status', 'error')}`). Check my **Manage Channels** permission.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.followup.send(
+        f"✅ **{label}** ticket created: {channel.mention}", ephemeral=True
+    )
+
+
 class Tickets(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         state.set_bot(bot)
         bot.add_view(CloseTicketView())
+        bot.add_view(TicketLangView())
         # Re-register reopen buttons for closed tickets.
         for number in db.closedtickets():
             try:
@@ -386,9 +424,9 @@ class Tickets(commands.Cog):
         if interaction.type != discord.InteractionType.component:
             return
         cid = interaction.data.get("custom_id", "")
-        if cid in _MODAL_MAP:
+        if cid in TICKET_BUTTONS:
             try:
-                await _gate_ticket(interaction, cid)
+                await _open_ticket(interaction, TICKET_BUTTONS[cid])
             except Exception as e:
                 # Dernier filet : une erreur ici produisait un
                 # « Unhandled event error in 'on_interaction' » et laissait
@@ -483,7 +521,7 @@ class Tickets(commands.Cog):
                         {"type": 14, "divider": True, "spacing": 1},
                         {
                             "type": 10,
-                            "content": "-# You can attach a screenshot or reference image directly in the form. 🍍",
+                            "content": "-# Click a category: the ticket opens right away and the bot tells you what to include. 🍍",
                         },
                     ],
                 }
