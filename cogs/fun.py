@@ -270,8 +270,6 @@ class Fun(commands.Cog):
                         },
                         {"type": 14, "divider": True, "spacing": 1},
                         {"type": 10, "content": f"{colour} **{answer}**"},
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {"type": 10, "content": f"-# Asked by {interaction.user.mention}"},
                     ],
                 }
             ],
@@ -296,6 +294,7 @@ class Fun(commands.Cog):
                 }
             ],
         }, accent=ui.ACCENT_FUN)
+        spinning.divider(spacing=1).footer(ui.signature(interaction))
         await ui.send(interaction, spinning)
         await asyncio.sleep(1.5)
 
