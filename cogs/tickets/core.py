@@ -13,6 +13,7 @@ import utils.db as db
 from utils.api import api_send
 from utils.helpers import ts_now
 from utils.emojis import E
+from utils import ui
 from config import (
     LOGO_URL,
     TICKET_CATEGORY_ID, TICKET_LOG_CHANNEL_ID, SUPPORT_ROLE_ID,
@@ -45,9 +46,9 @@ async def _do_close_ticket(
         # (ex. bouton resté dans un vieux salon, base restaurée…).
         log.warning("Close requested on untracked channel %s (%s)", channel.name, channel.id)
         if interaction:
-            await interaction.followup.send(
-                "This channel is not a tracked ticket.", ephemeral=True
-            )
+            await ui.send(interaction, ui.info_card(
+                "Not a tracked ticket", "This channel isn't one of my tickets."
+            ), ephemeral=True)
         return
 
     logs = db.ticketlogs().get(str(channel.id), [])
@@ -135,7 +136,10 @@ async def _do_close_ticket(
             log.error("Transcript send: %s", e)
 
     if interaction:
-        await interaction.followup.send(f"{reason_emoji} Closing in 5 seconds…", ephemeral=True)
+        closing = ui.Card("## 🔒 Ticket closing", accent=reason_accent)
+        closing.text(f"Reason: **{reason_label}**\nThis channel disappears in **5 seconds**.")
+        closing.footer("A transcript is being sent to the log channel")
+        await ui.send(interaction, closing, ephemeral=True)
     else:
         try:
             await channel.send(f"{reason_emoji} Closing in 5 seconds…")
@@ -163,9 +167,9 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
     closed = db.closedtickets()
     info = closed.get(str(number))
     if not info:
-        await interaction.response.send_message(
-            "This ticket can't be reopened.", ephemeral=True
-        )
+        await ui.send(interaction, ui.warn_card(
+            "Cannot reopen", "I have no record of that ticket number."
+        ), ephemeral=True)
         return
 
     # ACK immédiat : créer le salon + envoyer plusieurs messages dépasse
@@ -181,9 +185,10 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
         except discord.HTTPException:
             opener = None
     if opener is None:
-        await interaction.followup.send(
-            "The member who opened this ticket is no longer on the server.", ephemeral=True
-        )
+        await ui.send(interaction, ui.warn_card(
+            "Member left",
+            "The member who opened this ticket is no longer on the server.",
+        ), ephemeral=True)
         return
 
     category = guild.get_channel(TICKET_CATEGORY_ID)
@@ -199,10 +204,10 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
         )
     except discord.HTTPException as e:
         log.error("reopen create_text_channel: %s", e)
-        await interaction.followup.send(
-            f"I couldn't recreate the ticket channel (`{getattr(e, 'status', 'error')}`).",
-            ephemeral=True,
-        )
+        await ui.send(interaction, ui.error_card(
+            "Reopen failed",
+            f"Discord refused the request (`{getattr(e, 'status', 'error')}`).",
+        ), ephemeral=True)
         return
 
     ts_open = ts_now()
@@ -250,9 +255,10 @@ async def _reopen_ticket(interaction: discord.Interaction, number: int):
     })
     await channel.send(content=opener.mention, view=CloseTicketView())
 
-    await interaction.followup.send(
-        f"{E.check} Ticket `#{number}` reopened in {channel.mention}.", ephemeral=True
-    )
+    await ui.send(interaction, ui.ok_card(
+        f"Ticket #{number} reopened",
+        f"{channel.mention} is live again — the guide is already posted inside.",
+    ), ephemeral=True)
 
 
 async def _create_ticket(
@@ -363,11 +369,11 @@ async def _open_ticket(interaction: discord.Interaction, kind: str) -> None:
     # Un seul ticket ouvert par type et par membre (comme avant).
     for info in db.tickets().values():
         if info.get("opener_id") == uid and info.get("type") == kind:
-            await interaction.response.send_message(
+            await ui.send(interaction, ui.warn_card(
+                "Ticket already open",
                 "You already have an open ticket of this type. "
                 "Close it before opening a new one.",
-                ephemeral=True,
-            )
+            ), ephemeral=True)
             return
 
     # Créer le salon + y poster plusieurs messages dépasse les 3 s : on accuse
@@ -379,16 +385,17 @@ async def _open_ticket(interaction: discord.Interaction, kind: str) -> None:
         channel = await _create_ticket(interaction, kind)
     except discord.HTTPException as e:
         log.error("open %s ticket: %s", kind, e)
-        await interaction.followup.send(
-            f"❌ I couldn't create the {label} ticket "
-            f"(`{getattr(e, 'status', 'error')}`). Check my **Manage Channels** permission.",
-            ephemeral=True,
-        )
+        await ui.send(interaction, ui.error_card(
+            f"Couldn't create the {label} ticket",
+            f"Discord answered `{getattr(e, 'status', 'error')}`. "
+            "Check my **Manage Channels** permission.",
+        ), ephemeral=True)
         return
 
-    await interaction.followup.send(
-        f"✅ **{label}** ticket created: {channel.mention}", ephemeral=True
-    )
+    await ui.send(interaction, ui.ok_card(
+        f"{label} ticket created",
+        f"Head to {channel.mention} — your ticket is open, our team will answer there.",
+    ), ephemeral=True)
 
 
 class Tickets(commands.Cog):
@@ -432,12 +439,9 @@ class Tickets(commands.Cog):
                 # « Unhandled event error in 'on_interaction' » et laissait
                 # l'utilisateur devant « Interaction failed » sans explication.
                 log.exception("ticket button %s: %s", cid, e)
-                msg = "❌ Something went wrong on my side. Please try again in a moment."
                 try:
-                    if interaction.response.is_done():
-                        await interaction.followup.send(msg, ephemeral=True)
-                    else:
-                        await interaction.response.send_message(msg, ephemeral=True)
+                    await ui.error(interaction, "Something went wrong on my side. "
+                                                "Please try again in a moment.")
                 except Exception:
                     pass
 
@@ -527,8 +531,16 @@ class Tickets(commands.Cog):
                 }
             ],
         })
-        msg = "✓ Panel sent!" if status in (200, 201) else f"✗ `{status}`: {resp}"
-        await interaction.followup.send(msg, ephemeral=True)
+        if status in (200, 201):
+            await ui.send(interaction, ui.ok_card(
+                "Ticket panel posted",
+                "Previews & buttons are live — click one to test the flow.",
+            ), ephemeral=True)
+        else:
+            await ui.send(interaction, ui.error_card(
+                "Panel not posted",
+                f"Discord answered `{status}`. Check my **Send Messages** permission here.",
+            ), ephemeral=True)
 
     @app_commands.command(name="commission-close", description="Close a commission ticket and notify the client.")
     @app_commands.checks.has_permissions(manage_channels=True)
@@ -547,15 +559,15 @@ class Tickets(commands.Cog):
         info    = tickets.get(str(channel.id))
 
         if not info:
-            await interaction.response.send_message(
-                "This channel is not a tracked ticket.", ephemeral=True
-            )
+            await ui.send(interaction, ui.info_card(
+                "Not a tracked ticket", "This channel isn't one of my tickets."
+            ), ephemeral=True)
             return
 
         if info.get("type") != "commission":
-            await interaction.response.send_message(
-                "This command is only for commission tickets.", ephemeral=True
-            )
+            await ui.send(interaction, ui.warn_card(
+                "Wrong ticket type", "This command only works inside a **Commission** ticket."
+            ), ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -665,8 +677,9 @@ class Tickets(commands.Cog):
             except discord.Forbidden:
                 log.warning("Cannot DM %s, DMs disabled.", opener)
 
-        await interaction.followup.send(
-            "✓ Delivery message sent. Ticket closing in 10 seconds…", ephemeral=True
-        )
+        await ui.send(interaction, ui.ok_card(
+            "Delivery sent",
+            "The client got the message and the ticket closes in **10 seconds**.",
+        ), ephemeral=True)
         await asyncio.sleep(10)
         await _do_close_ticket(channel, interaction.user)

@@ -44,6 +44,7 @@ from utils.api import (
     rate_limit_snapshot as api_rate_limit_snapshot,
 )
 from utils.api import get_session
+from utils import ui
 from utils.helpers import ts_now
 from config import LOG_ACCESS_ROLE_ID, SUPPORT_ROLE_ID
 
@@ -1327,14 +1328,15 @@ class Logs(commands.Cog):
 
         if recreer:
             confirm = RecreateLogsView(interaction.user.id, nom_categorie, langue)
-            await interaction.followup.send(
-                "⚠️ **Recréer les salons de logs ?**\n"
-                "Les salons de logs actuels seront **supprimés** (leur historique "
-                "part avec) puis recréés. Les événements passés ne seront pas "
-                "récupérables.",
-                view=confirm,
-                ephemeral=True,
+            card = ui.warn_card(
+                "⚠️ Recreate the log channels?",
+                "The current log channels will be **deleted** (history included) and "
+                "created again — past events can't be recovered.",
             )
+            for item in confirm.children:
+                card.container.add_item(item)
+            card.footer(f"Confirmation requested by {interaction.user.display_name}")
+            await ui.send(interaction, card, ephemeral=True)
             return
 
         await self._run_setup(interaction, nom_categorie, langue, recreate=False)
@@ -1368,10 +1370,10 @@ class Logs(commands.Cog):
             finally:
                 loghub.resume()
         except discord.Forbidden:
-            await interaction.followup.send(
-                "❌ I need the **Manage Channels** permission to create the log channels.",
-                ephemeral=True,
-            )
+            await ui.send(interaction, ui.error_card(
+                "Missing permission",
+                "I need the **Manage Channels** permission to create the log channels.",
+            ), ephemeral=True)
             return
 
         role = guild.get_role(LOG_ACCESS_ROLE_ID)
@@ -1429,15 +1431,14 @@ class Logs(commands.Cog):
             return
         result = await loghub.post_guides(interaction.guild, force=reposter)
         if not result:
-            await interaction.followup.send(
-                "❌ Aucun salon de logs configuré — lance `/logs-setup` d'abord.",
-                ephemeral=True,
-            )
+            await ui.send(interaction, ui.warn_card(
+                "No log channel yet", "Run `/logs-setup` first, then try again."
+            ), ephemeral=True)
             return
         lines = "\n".join(f"• **{key}** — {state}" for key, state in result.items())
-        await interaction.followup.send(
-            "🧭 **Messages-guides mis à jour**\n" + lines, ephemeral=True
-        )
+        await ui.send(interaction, ui.ok_card(
+            "🧭 Log guides updated", lines
+        ), ephemeral=True)
 
     @app_commands.command(name="logtoggle", description="Activer/désactiver un type de log.")
     @app_commands.describe(type_log="Type de log à basculer.", actif="Activer ou désactiver.")
@@ -1453,11 +1454,10 @@ class Logs(commands.Cog):
         actif: bool = True,
     ):
         loghub.set_enabled(interaction.guild_id, type_log.value, actif)
-        emoji = "🟢" if actif else "🔴"
-        await interaction.response.send_message(
-            f"{emoji} Log **{type_log.value}** {'activé' if actif else 'désactivé'}.",
-            ephemeral=True,
-        )
+        await ui.send(interaction, ui.ok_card(
+            f"Log type {'enabled' if actif else 'disabled'}",
+            f"**{type_log.value}** is now {'on 🟢' if actif else 'off 🔴'}.",
+        ), ephemeral=True)
 
     @app_commands.command(name="logstats", description="Tableau de bord des statistiques du serveur.")
     @app_commands.guild_only()
@@ -1475,17 +1475,18 @@ class Logs(commands.Cog):
         bots   = guild.member_count - humans
         online = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
 
-        embed = discord.Embed(
-            title="📊 Tableau de bord — renseignement",
-            color=0xE67E22,
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.add_field(
+        # Les rubriques sont collectées puis rendues dans une carte du design
+        # system (même look que le reste du bot).
+        fields: list[tuple[str, str]] = []
+
+        def add_field(name: str, value: str, inline: bool = False) -> None:  # noqa: ARG001
+            fields.append((name, value))
+        add_field(
             name="👥 Membres",
             value=f"Total `{guild.member_count}`\nHumains `{humans}`\nBots `{bots}`\nEn ligne `{online}`",
             inline=True,
         )
-        embed.add_field(
+        add_field(
             name="📈 Aujourd'hui",
             value=(
                 f"💬 Messages `{today['messages']}`\n"
@@ -1495,7 +1496,7 @@ class Logs(commands.Cog):
             ),
             inline=True,
         )
-        embed.add_field(
+        add_field(
             name="🚪 Flux",
             value=(
                 f"📥 Arrivées `{today['joins']}`\n"
@@ -1511,7 +1512,7 @@ class Logs(commands.Cog):
             trend = []
             for date, day in history:
                 trend.append(f"`{date[5:]}` 💬{day['messages']:>5} ⌨️{day['commands']:>3} 📥{day['joins']:>2} 📤{day['leaves']:>2}")
-            embed.add_field(name="🗓️ 7 derniers jours", value="\n".join(trend), inline=False)
+            add_field(name="🗓️ 7 derniers jours", value="\n".join(trend), inline=False)
 
         top_channels = loghub.top_entries(today.get("channels"), 5)
         if top_channels:
@@ -1519,7 +1520,7 @@ class Logs(commands.Cog):
             for cid, count in top_channels:
                 ch = guild.get_channel(int(cid))
                 lines.append(f"• {ch.mention if ch else f'`{cid}`'} — **{count}** messages")
-            embed.add_field(name="🏆 Salons les plus actifs", value="\n".join(lines), inline=False)
+            add_field(name="🏆 Salons les plus actifs", value="\n".join(lines), inline=False)
 
         top_users = loghub.top_entries(today.get("users"), 5)
         if top_users:
@@ -1527,7 +1528,7 @@ class Logs(commands.Cog):
             for uid, count in top_users:
                 m = guild.get_member(int(uid))
                 lines.append(f"• {m.mention if m else f'`{uid}`'} — **{count}** messages")
-            embed.add_field(name="🥇 Membres les plus actifs", value="\n".join(lines), inline=False)
+            add_field(name="🥇 Membres les plus actifs", value="\n".join(lines), inline=False)
 
         invites = db.config().get("invites", {}).get(str(guild.id), {})
         if isinstance(invites, dict) and invites:
@@ -1541,7 +1542,7 @@ class Logs(commands.Cog):
             for uid, count in rows:
                 m = guild.get_member(int(uid))
                 lines.append(f"• {m.mention if m else f'`{uid}`'} — **{count}** invitation(s)")
-            embed.add_field(name="🚪 Top parrains", value="\n".join(lines) or "—", inline=False)
+            add_field(name="🚪 Top parrains", value="\n".join(lines) or "—", inline=False)
 
         # Santé du système de logs : sans cette ligne, impossible de savoir si
         # des logs sont retardés, perdus, ou si Discord nous limite.
@@ -1561,33 +1562,35 @@ class Logs(commands.Cog):
             + (f"Mode rafale 🟡 encore `{burst}s`" if burst else "Mode normal 🟢")
             + (f"\nTypes coupés : {', '.join(muted)}" if muted else "")
         )
-        embed.add_field(name="🩺 Santé des logs", value=health, inline=False)
+        add_field(name="🩺 Santé des logs", value=health, inline=False)
 
-        embed.set_footer(
-            text=f"Logs : {len(loghub.channel_map())}/{len(loghub.LOG_CHANNELS)} salons configurés"
+        card = ui.Card(
+            "## 📊 Server dashboard",
+            accent=ui.ACCENT_LOG,
+            thumbnail=str(guild.icon.url) if guild.icon else None,
         )
-        if guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        first_name, first_value = fields[0]
+        card.text(f"**{first_name}**\n{first_value}")
+        for name, value in fields[1:]:
+            card.divider(spacing=1)
+            card.text(f"**{name}**\n{value}")
+        card.divider(spacing=1).footer(
+            f"Logs: {len(loghub.channel_map())}/{len(loghub.LOG_CHANNELS)} channels · "
+            f"requested by {interaction.user.display_name}"
+        )
+        await ui.send(interaction, card, ephemeral=True)
 
     @logs_setup.error
     @logs_guide.error
     @logtoggle.error
     @logstats.error
     async def _log_cmd_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        msg = (
-            "❌ You don't have access to the logs commands."
-            if isinstance(error, app_commands.CheckFailure)
-            else f"❌ Error: `{type(error).__name__}`"
-        )
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
-        except Exception:
-            pass
+        if isinstance(error, app_commands.CheckFailure):
+            await ui.send(interaction, ui.error_card(
+                "No access", "You don't have access to the logs commands."
+            ), ephemeral=True)
+        else:
+            await ui.error(interaction, f"Unexpected error: `{type(error).__name__}`")
 
 
 class RecreateLogsView(discord.ui.View):

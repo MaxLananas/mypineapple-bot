@@ -1,4 +1,8 @@
-"""Interactive /help menu with category buttons."""
+"""Interactive /help menu — une carte navigable par catégorie.
+
+Le menu est **public** : la réponse reste dans le salon, tout le monde voit qui
+a lancé la commande et peut parcourir les catégories.
+"""
 from __future__ import annotations
 
 import discord
@@ -6,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils.emojis import E
+from utils import ui
 from config import LOGO_URL
 
 CATEGORY_META = {
@@ -21,60 +26,80 @@ CATEGORY_META = {
     "help":       ("Help",       E.question),
 }
 
+# Quelques précisions affichées sous les commandes, dans la langue du menu.
+CATEGORY_HINT = {
+    "leveling":   "Gagne de l'XP en discutant : les niveaux débloquent des rôles.",
+    "tickets":    "Ouvre un salon privé avec l'équipe (commission, bug, recrutement…).",
+    "moderation": "Commandes réservées à l'équipe — elles répondent discrètement.",
+    "fun":        "Sondages, giveaways et petites pauses entre deux builds.",
+    "profile":    "Ta carte de membre : niveau, portfolio, prix, inspirations.",
+    "info":       "Infos sur le serveur, le bot et les liens officiels.",
+    "welcome":    "Messages de bienvenue et rôles automatiques (équipe).",
+    "logs":       "Journal du serveur — configuration réservée à l'équipe.",
+    "invites":    "Suivi des invitations et du parrainage.",
+    "help":       "Ce menu.",
+}
 
-class HelpMenuView(discord.ui.View):
+
+class HelpMenu(ui.Card):
+    """Carte d'aide : une catégorie à la fois, boutons de navigation."""
+
     def __init__(self, categories: dict[str, list], author: discord.User):
-        super().__init__(timeout=300)
+        super().__init__(accent=ui.ACCENT_INFO)
         self.categories = categories
         self.author = author
         self.current = "leveling" if "leveling" in categories else next(iter(categories))
-        for key in categories:
-            name, emoji = CATEGORY_META.get(key, (key.capitalize(), E.pineapple))
-            self.add_item(self._category_button(key, name, emoji))
-        self._update_buttons()
+        self.timeout = 600
+        self._render()
 
-    def _category_button(self, key: str, label: str, emoji: str):
-        btn = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary)
-        btn.custom_id = f"help_cat_{key}"
-        btn.callback = self._make_callback(key)
-        return btn
-
-    def _make_callback(self, key: str):
-        async def cb(interaction: discord.Interaction):
-            self.current = key
-            self._update_buttons()
-            await interaction.response.edit_message(embed=self._build_embed(), view=self)
-        return cb
-
-    def _update_buttons(self):
-        for child in self.children:
-            key = child.custom_id.removeprefix("help_cat_")
-            child.style = (
-                discord.ButtonStyle.primary if key == self.current
-                else discord.ButtonStyle.secondary
-            )
-
-    def _build_embed(self) -> discord.Embed:
+    # ── Rendu ──
+    def _render(self) -> None:
+        self.container.clear_items()
         name, emoji = CATEGORY_META.get(self.current, (self.current.capitalize(), E.pineapple))
         cmds = sorted(self.categories.get(self.current, []), key=lambda c: c.name)
-        lines = []
-        for c in cmds:
-            desc = (c.description or "No description.").strip()
-            lines.append(f"**`/{c.name}`** — {desc}")
-        embed = discord.Embed(
-            title=f"{emoji} {name} commands",
-            description="\n".join(lines) or "No commands.",
-            color=0x9B8EC4,
-        )
-        embed.set_author(name="MyPineapple Help", icon_url=LOGO_URL)
-        embed.set_footer(text=f"{len(cmds)} command(s) — click a category above")
-        return embed
+        total = sum(len(v) for v in self.categories.values())
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author.id:
-            await interaction.response.send_message("This menu is not for you.", ephemeral=True)
-            return False
-        return True
+        self.header(
+            f"# {E.pineapple} MyPineapple — Help\n"
+            f"`{total}` command(s) · `{len(self.categories)}` catégories · "
+            f"niveau, tickets, build, modération…",
+            thumbnail=LOGO_URL,
+        )
+        self.divider()
+
+        lines = [f"### {emoji} {name}"]
+        lines += [f"**`/{c.name}`** — {(c.description or 'Sans description.').strip()}"
+                  for c in cmds] or ["Aucune commande dans cette catégorie."]
+        hint = CATEGORY_HINT.get(self.current)
+        if hint:
+            lines.append(f"\n-# {hint}")
+        self.text("\n".join(lines))
+        self.divider(spacing=1)
+
+        buttons = []
+        for key in self.categories:
+            cat_name, cat_emoji = CATEGORY_META.get(key, (key.capitalize(), E.pineapple))
+            button = discord.ui.Button(
+                label=cat_name,
+                emoji=cat_emoji,
+                style=discord.ButtonStyle.primary if key == self.current
+                else discord.ButtonStyle.secondary,
+                custom_id=f"help_cat_{key}",
+            )
+            button.callback = self._make_callback(key)
+            buttons.append(button)
+        for i in range(0, len(buttons), 5):
+            self.row(*buttons[i:i + 5])
+
+        self.footer(f"Menu lancé par {self.author.display_name} · "
+                    f"clique une catégorie pour la consulter")
+
+    def _make_callback(self, key: str):
+        async def callback(interaction: discord.Interaction):
+            self.current = key
+            self._render()
+            await interaction.response.edit_message(view=self)
+        return callback
 
 
 def _cog_category(cmd) -> str:
@@ -96,11 +121,11 @@ class Help(commands.Cog):
             categories.setdefault(_cog_category(cmd), []).append(cmd)
 
         if not categories:
-            await interaction.response.send_message("No commands available.", ephemeral=True)
+            await ui.send(interaction, ui.warn_card(
+                "Aucune commande", "Le bot n'a aucune commande à afficher pour l'instant."))
             return
 
-        view = HelpMenuView(categories, interaction.user)
-        await interaction.response.send_message(embed=view._build_embed(), view=view, ephemeral=True)
+        await ui.send(interaction, HelpMenu(categories, interaction.user))
 
 
 async def setup(bot: commands.Bot):

@@ -14,6 +14,7 @@ from utils.emojis import E, C
 from utils.leveling import level_roles, level_role_name, daily_xp_history
 from utils.images import generate_rank_card
 from utils.graphs import generate_xp_graph
+from utils import ui
 from config import (
     LOGO_URL, DISCORD_INVITE, INSTAGRAM_URL, WEBSITE_URL, YOUTUBE_URL,
     MODRINTH_URL, GITHUB_URL, TIKTOK_URL,
@@ -77,8 +78,8 @@ class Info(commands.Cog):
         )
         links_block = "\n\n".join(f"{emoji} **{name}** — {url}" for emoji, name, url in entries)
 
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -102,8 +103,7 @@ class Info(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_INFO)
 
     @app_commands.command(name="serverinfo", description="Display server information.")
     async def serverinfo(self, interaction: discord.Interaction):
@@ -114,8 +114,8 @@ class Info(commands.Cog):
         online = sum(1 for m in guild.members if m.status != discord.Status.offline and not m.bot)
         online_line = f"**Online** `{online}`\n"
 
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -148,8 +148,7 @@ class Info(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_BRAND)
 
     @app_commands.command(name="userinfo", description="Display information about a member.")
     @app_commands.describe(member="The member (default: yourself).")
@@ -173,8 +172,8 @@ class Info(commands.Cog):
         if role_name:
             level_line += f" · {role_name}"
 
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -204,15 +203,14 @@ class Info(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_BRAND)
 
     @app_commands.command(name="avatar", description="Display a member's avatar.")
     @app_commands.describe(member="The member (default: yourself).")
     async def avatar(self, interaction: discord.Interaction, member: discord.Member | None = None):
         target = member or interaction.user
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -232,12 +230,11 @@ class Info(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_INFO)
 
     @app_commands.command(name="ping", description="Check bot, API and database latency.")
     async def ping(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         ws_ms = round(self.bot.latency * 1000)
 
@@ -257,7 +254,7 @@ class Info(commands.Cog):
                 return E.dot_red
             return E.dot_green if ms < 100 else (E.dot_yellow if ms < 250 else E.dot_red)
 
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -277,8 +274,7 @@ class Info(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_OK)
 
     @app_commands.command(name="botinfo", description="Bot statistics.")
     async def botinfo(self, interaction: discord.Interaction):
@@ -291,8 +287,8 @@ class Info(commands.Cog):
         members = sum(g.member_count for g in self.bot.guilds)
         cmds = len(self.bot.tree.get_commands())
 
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -322,14 +318,16 @@ class Info(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_INFO)
 
     @app_commands.command(name="rank", description="Show your rank as a styled image card.")
     @app_commands.describe(member="The member to check (default: yourself).")
     async def rank(self, interaction: discord.Interaction, member: discord.Member | None = None):
         target = member or interaction.user
-        await interaction.response.defer(ephemeral=True)
+        # Réponse publique : la carte de rang apparaît dans le salon, rattachée
+        # à la commande (avant, elle partait en message détaché après un
+        # accusé de réception éphémère → impossible de savoir qui l'avait lancée).
+        await interaction.response.defer()
 
         rd = _rank_data(interaction, target)
         try:
@@ -344,13 +342,18 @@ class Info(commands.Cog):
                 role_name=rd["role_name"],
                 is_max=rd["is_max"],
             )
-            await interaction.channel.send(
-                file=discord.File(io.BytesIO(png), filename=f"rank-{target.id}.png")
-            )
-            await interaction.delete_original_response()
         except Exception as e:
             log.error("rank card: %s", e)
-            await interaction.followup.send("Couldn't generate the rank card.", ephemeral=True)
+            await ui.error(interaction, "Couldn't draw the rank card — try again in a second!")
+            return
+
+        progress = "" if rd["is_max"] else f" · {rd['xp']}/{rd['needed']} XP"
+        await interaction.followup.send(
+            content=f"{E.pineapple} **{target.display_name}** — level `{rd['level']}`"
+                    f"{progress} · rank `#{rd['rank']}`",
+            file=discord.File(io.BytesIO(png), filename=f"rank-{target.id}.png"),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @app_commands.command(name="stats", description="Your activity stats with an XP graph.")
     @app_commands.describe(member="Member to inspect (default: yourself).")
@@ -372,19 +375,22 @@ class Info(commands.Cog):
         level = int(ud.get("level", 0) or 0)
         xp    = int(ud.get("xp", 0) or 0)
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
-        # XP graph over the last 7 days.
+        # XP graph over the last 7 days — envoyé en réponse à la commande (et
+        # non en message détaché) pour que tout le monde voie qui l'a lancée.
         try:
             history = daily_xp_history(interaction.guild_id, target.id)
             graph = generate_xp_graph(username=target.display_name, daily_xp=history)
-            await interaction.channel.send(
-                file=discord.File(io.BytesIO(graph), filename=f"stats-{target.id}.png")
+            await interaction.followup.send(
+                content=f"{E.pineapple} **{target.display_name}** — XP curve, last 7 days",
+                file=discord.File(io.BytesIO(graph), filename=f"stats-{target.id}.png"),
+                allowed_mentions=discord.AllowedMentions.none(),
             )
         except Exception as e:
             log.error("stats graph: %s", e)
 
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -411,16 +417,17 @@ class Info(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_BRAND)
 
     @app_commands.command(name="emojis", description="List all custom server emojis.")
     @app_commands.checks.has_permissions(administrator=True)
     async def emojis_cmd(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         emojis = sorted(interaction.guild.emojis, key=lambda x: x.name)
         if not emojis:
-            await interaction.followup.send("No custom emojis on this server.", ephemeral=True)
+            await ui.send(interaction, ui.info_card(
+                "No custom emojis", "This server doesn't have any custom emoji yet."
+            ))
             return
 
         lines = [f"{e} `<:{e.name}:{e.id}>`  `:{e.name}:`" for e in emojis]
@@ -429,7 +436,7 @@ class Info(commands.Cog):
         per_chunk = 30
         chunks = ["\n".join(lines[i:i + per_chunk]) for i in range(0, len(lines), per_chunk)]
         for idx, chunk in enumerate(chunks, 1):
-            await api_send(interaction.channel.id, {
+            await ui.send_raw(interaction, {
                 "flags": 32768,
                 "components": [
                     {
@@ -448,8 +455,7 @@ class Info(commands.Cog):
                         ],
                     }
                 ],
-            })
-        await interaction.delete_original_response()
+            }, accent=ui.ACCENT_INFO)
 
     @app_commands.command(name="leaderboard", description="Show the top 10 members by level.")
     async def leaderboard(self, interaction: discord.Interaction):
@@ -458,7 +464,9 @@ class Info(commands.Cog):
         all_u = data.get(guild_id, {})
 
         if not all_u:
-            await interaction.response.send_message("No data yet.", ephemeral=True)
+            await ui.send(interaction, ui.info_card(
+                "No data yet", "Nobody has earned XP on this server so far — be the first!"
+            ))
             return
 
         def _lvl(entry) -> tuple[int, int]:
@@ -482,8 +490,8 @@ class Info(commands.Cog):
             suffix = f" · *{role_name}*" if role_name else ""
             lines.append(f"{badge} **{name}** — Level `{level}`{suffix}")
 
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -504,8 +512,7 @@ class Info(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_LEVEL)
 
 
 async def setup(bot: commands.Bot):

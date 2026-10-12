@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 
 from utils.emojis import E
+from utils import ui
 from .constants import (
     DEFAULT_LANG, TICKET_LANG_BUTTON_ID, TICKET_UI,
 )
@@ -36,9 +37,9 @@ class TicketLangView(discord.ui.View):
         tickets = db.tickets()
         info = tickets.get(str(interaction.channel_id))
         if not info:
-            await interaction.response.send_message(
-                "This channel is not a tracked ticket.", ephemeral=True
-            )
+            await ui.send(interaction, ui.info_card(
+                "Not a tracked ticket", "This channel isn't a ticket I created."
+            ), ephemeral=True)
             return
 
         current = info.get("lang") or DEFAULT_LANG
@@ -83,10 +84,13 @@ class CloseTicketView(discord.ui.View):
     )
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Ask for the close reason before closing.
-        view = CloseReasonView()
-        await interaction.response.send_message(
-            f"{E.question} Why are you closing this ticket?", view=view, ephemeral=True
-        )
+        # Raison de fermeture : petite carte avec les boutons de motif.
+        reason_card = ui.Card("## 🔒 Closing the ticket", accent=ui.ACCENT_WARN)
+        reason_card.text("Pick a reason — it helps us keep the logs meaningful.")
+        for item in CloseReasonView().children:
+            reason_card.container.add_item(item)
+        reason_card.footer(f"Close requested by {interaction.user.display_name}")
+        await ui.send(interaction, reason_card, ephemeral=True)
 
 
 class CloseReasonView(discord.ui.View):

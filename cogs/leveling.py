@@ -12,6 +12,7 @@ import utils.db as db
 from utils.api import api_send
 from utils.helpers import ts_now
 from utils.leveling import add_xp, sync_level_roles, bump_stat
+from utils import ui
 from config import (
     NO_XP_CHANNEL_ID,
     XP_MIN, XP_MAX, XP_COOLDOWN_SECONDS,
@@ -161,7 +162,10 @@ class Leveling(commands.Cog):
             try:
                 role = await guild.create_role(name=clean, color=color, reason=f"Level {level} milestone")
             except discord.Forbidden:
-                await interaction.followup.send("❌ I lack permission to create roles.", ephemeral=True)
+                await ui.send(interaction, ui.error_card(
+                    "Missing permission",
+                    "I need the **Manage Roles** permission to create level roles.",
+                ), ephemeral=True)
                 return
             db_roles[str(level)] = role.id
             created.append(f"`{level}` {role.mention} (#{color_hex})")
@@ -172,9 +176,9 @@ class Leveling(commands.Cog):
             lines.append("**Created:**\n" + "\n".join(created))
         if skipped:
             lines.append("**Already exist:**\n" + "\n".join(skipped))
-        await interaction.followup.send(
-            "✅ Level roles synced!\n\n" + "\n\n".join(lines), ephemeral=True
-        )
+        await ui.send(interaction, ui.ok_card(
+            "Level roles synced", "\n\n".join(lines) or "Nothing to create — all roles exist."
+        ), ephemeral=True)
 
     @app_commands.command(name="level-rewards", description="List every level role and its threshold.")
     async def level_rewards(self, interaction: discord.Interaction):
@@ -189,8 +193,8 @@ class Leveling(commands.Cog):
             mention = role.mention if role else "*(missing)*"
             lines.append(f"`Lv {level:>3}` — {mention}")
 
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -203,8 +207,7 @@ class Leveling(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_LEVEL)
 
     @app_commands.command(name="reward", description="Grant an XP reward to a member.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -216,7 +219,7 @@ class Leveling(commands.Cog):
         amount: app_commands.Range[int, 1, 100000],
         reason: str = "Reward",
     ):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         await add_xp(
             guild=interaction.guild,
             member=member,
@@ -225,7 +228,7 @@ class Leveling(commands.Cog):
         )
         ts = ts_now()
         # Carte de récompense publique + confirmation éphémère.
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -257,10 +260,8 @@ class Leveling(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.followup.send(
-            f"✅ Granted `{amount}` XP to {member.mention}.", ephemeral=True
-        )
+        }, accent=ui.ACCENT_LEVEL)
+
 
     @app_commands.command(name="xp-reset", description="Reset a member's XP and level.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -271,7 +272,9 @@ class Leveling(commands.Cog):
         data.setdefault(str(interaction.guild_id), {})[str(member.id)] = {"xp": 0, "level": 0}
         db.save_levels(data)
         await sync_level_roles(interaction.guild, member, 0)
-        await interaction.followup.send(f"✓ XP reset for {member.mention}.", ephemeral=True)
+        await ui.send(interaction, ui.ok_card(
+            "XP reset", f"{member.mention} is back to level `0` with `0` XP."
+        ), ephemeral=True)
 
     @app_commands.command(name="xp-set", description="Force a member's level.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -287,9 +290,9 @@ class Leveling(commands.Cog):
         data.setdefault(str(interaction.guild_id), {})[str(member.id)] = {"xp": 0, "level": level}
         db.save_levels(data)
         await sync_level_roles(interaction.guild, member, level)
-        await interaction.followup.send(
-            f"✓ {member.mention} is now level **{level}**.", ephemeral=True
-        )
+        await ui.send(interaction, ui.ok_card(
+            "Level updated", f"{member.mention} is now level **{level}**."
+        ), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

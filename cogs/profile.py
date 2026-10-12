@@ -12,6 +12,7 @@ from utils.api import api_send, _request_with_backoff
 from utils.helpers import xp_needed, progress_bar, ts_now, parse_iso, MAX_LEVEL
 from utils.leveling import add_xp, level_roles, level_role_name
 from utils.emojis import C
+from utils import ui
 from config import (
     LOGO_URL,
     PORTFOLIO_FILES, RELEASE_BASE, CREDITS,
@@ -318,10 +319,9 @@ class ReviewStep1(discord.ui.Modal, title="Review — Step 1 / 2"):
         except ValueError:
             stars = 0
         if not 1 <= stars <= 5:
-            await interaction.response.send_message(
-                "❌ Rating must be a whole number between **1** and **5**. Please try again.",
-                ephemeral=True,
-            )
+            await ui.send(interaction, ui.warn_card(
+                "Invalid rating", "Give a whole number of stars between **1** and **5**."
+            ), ephemeral=True)
             return
 
         img       = self.image_url.value.strip() if self.image_url.value else None
@@ -335,19 +335,22 @@ class ReviewStep1(discord.ui.Modal, title="Review — Step 1 / 2"):
             image_url= valid_img,
         )
 
-        await interaction.response.send_message(
-            content=(
-                f"**Step 2 / 2** — Select the service type and your recommendation.\n"
-                f"-# Project: *{self.project.value}* · {stars}⭐"
-            ),
-            view=view,
-            ephemeral=True,
+        # Étape 2 dans une carte : même style que le reste du bot.
+        step2 = ui.Card("## 📝 Review — Step 2 / 2", accent=ui.ACCENT_INFO)
+        step2.text(
+            "Pick the **service type** and whether you'd recommend me, "
+            "then hit **Submit Review**."
         )
+        step2.divider(spacing=1)
+        step2.footer(f"Project: {self.project.value} · {stars}⭐")
+        for item in view.children:          # mêmes boutons/menu que la vue d'origine
+            step2.container.add_item(item)
+        await ui.send(interaction, step2, ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         log.error("ReviewStep1: %s", error)
         try:
-            await interaction.response.send_message("An error occurred.", ephemeral=True)
+            await ui.error(interaction, "The review form hit an error. Please try again.")
         except Exception:
             pass
 
@@ -419,21 +422,16 @@ class ReviewStep2View(discord.ui.View):
 
         for item in self.children:
             item.disabled = True
-        await interaction.edit_original_response(
-            content="✓ Review submitted!",
-            view=self,
+        done = ui.ok_card(
+            "Review submitted",
+            (f"Posted in {thread.mention} — thank you! 🍍" if thread
+             else "Thank you for your feedback! 🍍"),
         )
-
-        if thread:
-            await interaction.followup.send(
-                f"✓ Your review has been posted in {thread.mention} — thank you! 🍍",
-                ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                "✓ Review submitted! Thank you for your feedback. 🍍",
-                ephemeral=True,
-            )
+        done.timeout = None
+        for item in self.children:
+            item.disabled = True
+            done.container.add_item(item)
+        await ui.edit(interaction, done)
 
 
 class Profile(commands.Cog):
@@ -484,8 +482,8 @@ class Profile(commands.Cog):
         next_ml = next((l for l in sorted(level_roles()) if l > level), None)
         ml_text = f"Next milestone: level **{next_ml}**" if next_ml else "🏆 Maximum level reached!"
 
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -531,15 +529,14 @@ class Profile(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_LEVEL)
 
     @app_commands.command(name="daily", description="Claim your daily XP reward.")
     async def daily(self, interaction: discord.Interaction):
         # ⚠️ ACK IMMÉDIAT : add_xp() peut prendre > 3 s (rôles + message de
         # level-up). Déferrer après coup faisait expirer le token de
         # l'interaction → "404 Not Found (10062): Unknown interaction".
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         now      = datetime.now(timezone.utc)
         guild_id = str(interaction.guild_id)
@@ -557,9 +554,10 @@ class Profile(commands.Cog):
             if diff < 86400:
                 remaining = max(0, int(86400 - diff))
                 h, m = divmod(remaining // 60, 60)
-                await interaction.followup.send(
-                    f"⏳ Come back in **{h}h {m}m** for your next daily!", ephemeral=True
-                )
+                await ui.send(interaction, ui.warn_card(
+                    "⏳ Daily already claimed",
+                    f"Come back in **{h}h {m}m** for your next daily reward.",
+                ), ephemeral=True)
                 return
             try:
                 prev_streak = int(user_data.get("streak", 0) or 0)
@@ -595,7 +593,7 @@ class Profile(commands.Cog):
             streak_bonus = " 🔥 **+20% streak bonus!**"
 
         ts = ts_now()
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -628,8 +626,7 @@ class Profile(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_LEVEL)
 
     @app_commands.command(name="streak", description="Display your daily login streak.")
     @app_commands.describe(member="Member to inspect (default: yourself).")
@@ -654,8 +651,8 @@ class Profile(commands.Cog):
         filled = min(streak, 7)
         bar    = "🔥" * filled + "⬜" * (7 - filled)
 
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -685,17 +682,17 @@ class Profile(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_LEVEL)
 
     @app_commands.command(name="portfolio", description="Receive the build portfolio in DM (paginated).")
     async def portfolio(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        # Ack public : on voit qui a demandé le portfolio (le contenu part en DM).
+        await interaction.response.defer()
 
         try:
             dm = await interaction.user.create_dm()
         except discord.Forbidden:
-            await interaction.followup.send("❌ Enable your DMs first!", ephemeral=True)
+            await ui.error(interaction, "Enable your DMs first — I can only send the portfolio in DM.")
             return
 
         credits_present: set[str] = {f["credit"] for f in PORTFOLIO_FILES if f["credit"]}
@@ -721,12 +718,12 @@ class Profile(commands.Cog):
         try:
             await dm.send(embed=embed, view=view)
         except discord.Forbidden:
-            await interaction.followup.send("❌ Enable your DMs first!", ephemeral=True)
+            await ui.error(interaction, "Enable your DMs first — I can only send the portfolio in DM.")
             return
 
-        await interaction.followup.send(
-            "✓ Portfolio sent to your DMs (paginated with buttons)! 🍍", ephemeral=True
-        )
+        await ui.send(interaction, ui.ok_card(
+            "Portfolio sent", "Check your DMs — it's paginated, use the buttons to browse. 🍍"
+        ), ephemeral=True)
 
     @app_commands.command(name="review", description="Leave a review for a commission.")
     async def review(self, interaction: discord.Interaction):
@@ -734,7 +731,7 @@ class Profile(commands.Cog):
 
     @app_commands.command(name="inspirations", description="Get 3 random build inspirations.")
     async def inspirations(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         picks = random.sample(PORTFOLIO_FILES, min(3, len(PORTFOLIO_FILES)))
         accents = [0xA8D8EA, 0xF7CAC9, 0xC3B1E1]
         components = []
@@ -765,13 +762,12 @@ class Profile(commands.Cog):
                 }
             ],
         }
-        await api_send(interaction.channel.id, {"flags": 32768, "components": [header] + components})
-        await interaction.delete_original_response()
+        await ui.send_raw(interaction, {"flags": 32768, "components": [header] + components}, accent=ui.ACCENT_INFO)
 
     @app_commands.command(name="price", description="Display the commission price list.")
     async def price(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -809,13 +805,12 @@ class Profile(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_BRAND)
 
     @app_commands.command(name="faq", description="Frequently asked questions about commissions.")
     async def faq(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -848,8 +843,7 @@ class Profile(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_INFO)
 
     @app_commands.command(name="availability", description="Check current availability for commissions.")
     async def availability(self, interaction: discord.Interaction):
@@ -861,8 +855,8 @@ class Profile(commands.Cog):
             "closed":    ("🔴", "Closed",      "Commissions are temporarily closed. Check back later.", 0xED4245),
         }
         emoji, label, desc, accent = status_map.get(status, status_map["available"])
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -879,8 +873,7 @@ class Profile(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_OK)
 
     @app_commands.command(name="availability-set", description="Set your availability status.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -893,17 +886,21 @@ class Profile(commands.Cog):
         data = db.config()
         data["availability"] = status.value
         db.save_config(data)
-        await interaction.response.send_message(f"✓ Availability set to **{status.name}**.", ephemeral=True)
+        await ui.send(interaction, ui.ok_card(
+            "Availability updated", f"New status: **{status.name}**."
+        ), ephemeral=True)
 
     @app_commands.command(name="snipe", description="Show the last deleted message in this channel.")
     async def snipe(self, interaction: discord.Interaction):
         from cogs.logs import _snipe_cache
         entry = _snipe_cache.get(interaction.channel.id)
         if not entry:
-            await interaction.response.send_message("Nothing to snipe here.", ephemeral=True)
+            await ui.send(interaction, ui.info_card(
+                "Nothing to snipe", "No deleted message cached in this channel (yet)."
+            ))
             return
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -927,18 +924,19 @@ class Profile(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_INFO)
 
     @app_commands.command(name="editsnipe", description="Show the last edited message in this channel.")
     async def editsnipe(self, interaction: discord.Interaction):
         from cogs.logs import _editsnipe_cache
         entry = _editsnipe_cache.get(interaction.channel.id)
         if not entry:
-            await interaction.response.send_message("Nothing to edit-snipe here.", ephemeral=True)
+            await ui.send(interaction, ui.info_card(
+                "Nothing to edit-snipe", "No edited message cached in this channel (yet)."
+            ))
             return
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -963,8 +961,7 @@ class Profile(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_INFO)
 
 
 async def setup(bot: commands.Bot):

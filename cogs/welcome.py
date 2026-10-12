@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 
 from utils.api import api_send
+from utils import ui
 from utils.helpers import ts_now, safe_add_role
 from config import AUTOROLE_ID, WELCOME_CHANNEL_ID, PORTFOLIO_FILES, RELEASE_BASE, CREDITS
 
@@ -120,62 +121,25 @@ class Welcome(commands.Cog):
         created_ts    = int(member.created_at.timestamp())
         join_ts       = ts_now()
 
-        inner_components = [
-            {
-                "type": 12,
-                "items": [
-                    {
-                        "media": {"url": build_url},
-                        "description": "MyPineapple build showcase",
-                        "spoiler": False,
-                    }
-                ],
-            },
-        ]
-
+        # Carte d'accueil construite avec le design system (galerie + texte).
+        card = ui.Card(accent=ui.ACCENT_BRAND)
+        card.media((build_url, "MyPineapple build showcase"))
         if build_caption:
-            inner_components.append({"type": 10, "content": build_caption})
+            card.text(build_caption)
+        card.divider(spacing=1)
+        card.header(
+            f"## {emoji} Welcome, {member.display_name}!\n*{member.mention} {phrase}.*",
+            thumbnail=str(member.display_avatar.url),
+        )
+        card.text(
+            f"You are the **{member_cnt}th** member of the server.\n"
+            f"**Account created** <t:{created_ts}:R>\n"
+            f"**Joined** <t:{join_ts}:F>\n\n"
+            f"📋 Check out our [commissions channel]({COMMISSION_CHANNEL}) to order a build!"
+        )
+        card.divider(spacing=1).footer("MyPineapple · welcome aboard 🍍")
 
-        inner_components += [
-            {"type": 14, "divider": True, "spacing": 1},
-            {
-                "type": 9,
-                "components": [
-                    {
-                        "type": 10,
-                        "content": (
-                            f"## {emoji} Welcome, {member.display_name}!\n"
-                            f"*{member.mention} {phrase}.*"
-                        ),
-                    }
-                ],
-                "accessory": {
-                    "type": 11,
-                    "media": {"url": str(member.display_avatar.url)},
-                },
-            },
-            {"type": 14, "divider": True, "spacing": 1},
-            {
-                "type": 10,
-                "content": (
-                    f"You are the **{member_cnt}th** member of the server.\n"
-                    f"**Account created** <t:{created_ts}:R>\n"
-                    f"**Joined** <t:{join_ts}:F>\n\n"
-                    f"📋 Check out our [commissions channel]({COMMISSION_CHANNEL}) to order a build!"
-                ),
-            },
-        ]
-
-        payload = {
-            "flags": 32768,
-            "components": [
-                {
-                    "type": 17,
-                    "accent_color": 0x1E90FF,
-                    "components": inner_components,
-                }
-            ],
-        }
+        payload = card.payload()
 
         status, resp = await api_send(welcome_ch.id, payload)
         if status not in (200, 201):

@@ -13,6 +13,7 @@ import utils.db as db
 from utils.api import api_send
 from utils.helpers import ts_now
 from utils.emojis import E
+from utils import ui
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +94,9 @@ class PollButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         state = _get_polls().get(self.poll_key)
         if not state:
-            await interaction.response.send_message("Poll expired.", ephemeral=True)
+            await ui.send(interaction, ui.warn_card(
+                "Poll expired", "This poll is no longer available."
+            ), ephemeral=True)
             return
 
         # votes et counts sont stockés avec des clés str (JSON) — on normalise.
@@ -117,9 +120,10 @@ class PollButton(discord.ui.Button):
         else:
             old = votes.get(uid)
             if old == self.index:
-                await interaction.response.send_message(
-                    f"You already voted for **{state['options'][self.index]}**!", ephemeral=True
-                )
+                await ui.send(interaction, ui.info_card(
+                    "Already counted",
+                    f"Your vote is already on **{state['options'][self.index]}**.",
+                ), ephemeral=True)
                 return
             if old is not None:
                 counts[old] = max(0, counts[old] - 1)
@@ -133,15 +137,35 @@ class PollButton(discord.ui.Button):
         _save_polls(_get_polls())
 
         if changed:
-            new_text = _build_poll_text(
-                state["question"], state["options"], counts, state["ts"], multi
-            )
-            await interaction.response.edit_message(
-                content=new_text,
-                view=self.view,
-            )
+            await interaction.response.edit_message(view=_poll_card(self.poll_key, state))
         else:
             await interaction.response.defer()
+
+
+def _poll_card(poll_key: str, state: dict) -> ui.Card:
+    """Carte d'un sondage : résultats + boutons de vote (custom_id stable).
+
+    Les boutons gardent le ``custom_id`` attendu par la vue persistante
+    ``PollView`` (enregistrée via ``bot.add_view``), donc ils continuent de
+    répondre après un redémarrage du bot.
+    """
+    card = ui.Card(accent=ui.ACCENT_FUN)
+    card.text(_build_poll_text(
+        state["question"], state["options"], state["counts"], state["ts"], state["multi"],
+    ))
+    buttons = [
+        discord.ui.Button(
+            label=option[:80],
+            style=POLL_COLOURS[i % len(POLL_COLOURS)],
+            emoji=POLL_EMOJIS[i],
+            custom_id=f"poll_{poll_key}_{i}",
+        )
+        for i, option in enumerate(state["options"])
+    ]
+    for i in range(0, len(buttons), 5):
+        card.row(*buttons[i:i + 5])
+    card.divider(spacing=1).footer(f"Sondage {poll_key} · vote avec les boutons ci-dessus")
+    return card
 
 
 class PollView(discord.ui.View):
@@ -211,11 +235,9 @@ class Fun(commands.Cog):
                 lines += f"{E.dot_red} No valid entries."
             if channel:
                 try:
-                    await api_send(channel.id, {"flags": 32768, "components": [
-                        {"type": 17, "accent_color": 0xFFD700, "components": [
-                            {"type": 10, "content": lines}
-                        ]}
-                    ]})
+                    announcement = ui.Card(accent=ui.ACCENT_FUN).text(lines)
+                    announcement.divider(spacing=1).footer("Tirage automatique")
+                    await api_send(channel.id, announcement.payload())
                 except Exception as e:
                     log.error("giveaway announce: %s", e)
             del gws[gid]
@@ -228,8 +250,8 @@ class Fun(commands.Cog):
         # limité à 4000 → on borne ce qui est réaffiché.
         question = question.strip()[:300]
         colour, answer = random.choice(EIGHTBALL_ANSWERS)
-        await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await interaction.response.defer()
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -253,15 +275,16 @@ class Fun(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_FUN)
 
     @app_commands.command(name="coinflip", description="Flip a coin.")
     async def coinflip(self, interaction: discord.Interaction):
         result, emoji, accent = random.choice(COINFLIP_SIDES)
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
-        await api_send(interaction.channel.id, {
+        # Une seule réponse : la carte « ça tourne » est remplacée par le résultat
+        # (avant, deux messages étaient postés à la suite).
+        spinning = ui.polish({
             "flags": 32768,
             "components": [
                 {
@@ -272,45 +295,15 @@ class Fun(commands.Cog):
                     ],
                 }
             ],
-        })
+        }, accent=ui.ACCENT_FUN)
+        await ui.send(interaction, spinning)
         await asyncio.sleep(1.5)
-        await api_send(interaction.channel.id, {
-            "flags": 32768,
-            "components": [
-                {
-                    "type": 17,
-                    "accent_color": accent,
-                    "components": [
-                        {
-                            "type": 9,
-                            "components": [
-                                {
-                                    "type": 10,
-                                    "content": (
-                                        f"## {emoji} {result}!\n"
-                                        f"{interaction.user.mention} flipped a coin."
-                                    ),
-                                }
-                            ],
-                            "accessory": {
-                                "type": 11,
-                                "media": {"url": str(interaction.user.display_avatar.url)},
-                            },
-                        },
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 10,
-                            "content": (
-                                "🌊 **HEADS** — blue, mysterious, like the ocean."
-                                if result == "HEADS"
-                                else "🪙 **TAILS** — silver, classic, reliable."
-                            ),
-                        },
-                    ],
-                }
-            ],
-        })
-        await interaction.delete_original_response()
+
+        result_card = ui.Card(accent=ui.ACCENT_FUN)
+        result_card.header(f"## {emoji} {result}!", thumbnail=str(interaction.user.display_avatar.url))
+        result_card.text(f"{interaction.user.mention} flipped a coin.")
+        result_card.divider(spacing=1).footer(ui.signature(interaction))
+        await ui.edit(interaction, result_card)
 
     @app_commands.command(name="poll", description="Create an interactive poll.")
     @app_commands.describe(
@@ -338,7 +331,9 @@ class Fun(commands.Cog):
         options = [o.strip()[:180] for o in [option1, option2, option3, option4, option5] if o]
         question = question.strip()[:256]
         if len(options) < 2:
-            await interaction.response.send_message("At least 2 options required.", ephemeral=True)
+            await ui.send(interaction, ui.warn_card(
+                "Not enough options", "A poll needs at least **2** options."
+            ), ephemeral=True)
             return
 
         ts       = ts_now()
@@ -358,7 +353,25 @@ class Fun(commands.Cog):
         text = _build_poll_text(question, options, [0] * len(options), ts, multi)
         view = PollView(poll_key, options, multi)
 
-        await interaction.response.send_message(content=text, view=view)
+        # La carte contient le rendu + les boutons de vote : same custom_id que
+        # la vue persistante, donc les clics marchent aussi après un restart.
+        card = ui.Card(accent=ui.ACCENT_FUN).text(text)
+        buttons = [
+            discord.ui.Button(
+                label=opt[:80],
+                style=POLL_COLOURS[i % len(POLL_COLOURS)],
+                emoji=POLL_EMOJIS[i],
+                custom_id=f"poll_{poll_key}_{i}",
+            )
+            for i, opt in enumerate(options)
+        ]
+        for i in range(0, len(buttons), 5):
+            card.row(*buttons[i:i + 5])
+        card.divider(spacing=1).footer(
+            f"Sondage {poll_key} · lancé par {interaction.user.display_name}"
+        )
+
+        await ui.send(interaction, card)
         # Enregistre la vue persistante auprès du bot (re-disponible au restart).
         self.bot.add_view(view)
 
@@ -381,12 +394,14 @@ class Fun(commands.Cog):
         prize = prize.strip()[:150]
         delta = _parse_duration(duration)
         if not delta:
-            await interaction.response.send_message(
-                "Invalid duration. Examples: `10m`, `2h`, `1d`.", ephemeral=True
-            )
+            await ui.send(interaction, ui.warn_card(
+                "Invalid duration", "Try something like `10m`, `2h` or `1d`."
+            ), ephemeral=True)
             return
         if delta.total_seconds() < 60:
-            await interaction.response.send_message("Duration must be at least 1 minute.", ephemeral=True)
+            await ui.send(interaction, ui.warn_card(
+                "Too short", "A giveaway must last at least **1 minute**."
+            ), ephemeral=True)
             return
 
         ends_at = ts_now() + int(delta.total_seconds())
@@ -406,13 +421,19 @@ class Fun(commands.Cog):
         db.save_config(db.config())
 
         view = GiveawayView(gid)
-        text = (
-            f"## {E.gift} GIVEAWAY\n"
+        card = ui.Card(f"## {E.gift} GIVEAWAY", accent=ui.ACCENT_FUN)
+        card.text(
             f"**Prize:** {prize}\n"
             f"**Ends** <t:{ends_at}:R> · **Winners** `{winners}`\n\n"
             f"{E.party} Click **Enter** to participate!"
         )
-        await interaction.response.send_message(text, view=view)
+        card.divider(spacing=1)
+        card.row(discord.ui.Button(
+            label="Enter 🎉", style=discord.ButtonStyle.success,
+            custom_id=f"giveaway_enter_{gid}",
+        ))
+        card.footer(f"Organisé par {interaction.user.display_name}")
+        await ui.send(interaction, card)
 
         msg = await interaction.original_response()
         gws[gid]["message_id"] = msg.id
@@ -445,23 +466,29 @@ class GiveawayView(discord.ui.View):
         gws = db.config().get("giveaways", {})
         gw = gws.get(self.gid)
         if not gw:
-            await interaction.response.send_message("Giveaway ended.", ephemeral=True)
+            await ui.send(interaction, ui.info_card(
+                "Giveaway over", "This giveaway has already been drawn."
+            ), ephemeral=True)
             return
         if time.time() > gw["ends_at"]:
-            await interaction.response.send_message("Giveaway ended.", ephemeral=True)
+            await ui.send(interaction, ui.info_card(
+                "Giveaway over", "This giveaway has already been drawn."
+            ), ephemeral=True)
             return
 
         entries = gw.get("entries", [])
         if interaction.user.id in entries:
-            await interaction.response.send_message("You're already entered.", ephemeral=True)
+            await ui.send(interaction, ui.info_card(
+                "Already entered", "You're on the list — good luck! 🍀"
+            ), ephemeral=True)
             return
         entries.append(interaction.user.id)
         gw["entries"] = entries
         db.save_config(db.config())
 
-        await interaction.response.send_message(
-            f"{E.check} You're in! `{len(entries)}` participant(s).", ephemeral=True
-        )
+        await ui.send(interaction, ui.ok_card(
+            "You're in! 🎉", f"`{len(entries)}` participant(s) so far."
+        ), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

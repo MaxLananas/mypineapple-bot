@@ -12,6 +12,7 @@ import utils.loghub as loghub
 from utils.api import api_send, MENTIONS_ALL
 from utils.helpers import ts_now, parse_iso
 from utils.antispam import process_message
+from utils import ui
 
 log = logging.getLogger(__name__)
 
@@ -54,18 +55,22 @@ class Moderation(commands.Cog):
         reason = reason[:500]  # option slash jusqu'à 6000 car. → 400 côté Discord
 
         if member.top_role >= interaction.user.top_role:
-            await interaction.followup.send("You cannot ban this member.", ephemeral=True)
+            await ui.send(interaction, ui.error_card(
+                "Ban not applied",
+                "You cannot ban a member with an equal or higher role.",
+            ), ephemeral=True)
             return
         try:
             await member.ban(reason=f"{interaction.user} — {reason}", delete_message_days=delete_days)
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"I couldn't ban this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
-            )
+            await ui.send(interaction, ui.error_card(
+                "Ban failed",
+                f"Discord refused the request (`{getattr(e, 'status', 'error')}`).",
+            ), ephemeral=True)
             return
 
         ts = ts_now()
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -95,8 +100,7 @@ class Moderation(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_MOD, ephemeral=True)
 
         await loghub.mod_action(
             interaction.guild, "Bannissement", member, interaction.user,
@@ -118,18 +122,22 @@ class Moderation(commands.Cog):
         reason = reason[:500]
 
         if member.top_role >= interaction.user.top_role:
-            await interaction.followup.send("You cannot kick this member.", ephemeral=True)
+            await ui.send(interaction, ui.error_card(
+                "Kick not applied",
+                "You cannot kick a member with an equal or higher role.",
+            ), ephemeral=True)
             return
         try:
             await member.kick(reason=f"{interaction.user} — {reason}")
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"I couldn't kick this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
-            )
+            await ui.send(interaction, ui.error_card(
+                "Kick failed",
+                f"Discord refused the request (`{getattr(e, 'status', 'error')}`).",
+            ), ephemeral=True)
             return
 
         ts = ts_now()
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -159,8 +167,7 @@ class Moderation(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_MOD, ephemeral=True)
 
         await loghub.mod_action(
             interaction.guild, "Expulsion", member, interaction.user,
@@ -182,17 +189,23 @@ class Moderation(commands.Cog):
             user = await self.bot.fetch_user(uid)
             await interaction.guild.unban(user, reason=f"{interaction.user} — {reason}")
         except ValueError:
-            await interaction.followup.send("Invalid ID.", ephemeral=True)
+            await ui.send(interaction, ui.error_card(
+                "Invalid ID", "Give me a numeric Discord user ID, like `123456789012345678`."
+            ), ephemeral=True)
             return
         except discord.NotFound:
-            await interaction.followup.send("This user is not banned.", ephemeral=True)
+            await ui.send(interaction, ui.warn_card(
+                "Not banned", "That user is not on the ban list."
+            ), ephemeral=True)
             return
         except discord.Forbidden:
-            await interaction.followup.send("I lack permission to unban.", ephemeral=True)
+            await ui.send(interaction, ui.error_card(
+                "Missing permission", "I need the **Ban Members** permission to do that."
+            ), ephemeral=True)
             return
 
         ts = ts_now()
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -222,8 +235,7 @@ class Moderation(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_MOD, ephemeral=True)
         await loghub.mod_action(
             interaction.guild, "Débannissement", user, interaction.user,
             reason=reason, color=0x57F287, thumbnail=str(user.display_avatar.url),
@@ -235,7 +247,9 @@ class Moderation(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         bans = [entry async for entry in interaction.guild.bans(limit=50)]
         if not bans:
-            await interaction.followup.send("No banned members.", ephemeral=True)
+            await ui.send(interaction, ui.ok_card(
+                "Nobody is banned", "The ban list is empty — clean slate! 🍍"
+            ), ephemeral=True)
             return
 
         lines = []
@@ -246,7 +260,7 @@ class Moderation(commands.Cog):
         total = len(bans)
         icon_url = str(interaction.guild.icon.url) if interaction.guild.icon else ""
 
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -267,8 +281,7 @@ class Moderation(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_MOD, ephemeral=True)
 
     @app_commands.command(name="mute", description="Timeout a member (e.g. 10m, 2h, 7d).")
     @app_commands.checks.has_permissions(moderate_members=True)
@@ -286,23 +299,26 @@ class Moderation(commands.Cog):
 
         delta = parse_duration(duration)
         if not delta:
-            await interaction.followup.send(
-                "Invalid duration. Examples: `10m`, `2h`, `7d`.", ephemeral=True
-            )
+            await ui.send(interaction, ui.warn_card(
+                "Invalid duration", "Try something like `10m`, `2h` or `7d`."
+            ), ephemeral=True)
             return
         if delta > timedelta(days=28):
-            await interaction.followup.send("Maximum duration: 28 days.", ephemeral=True)
+            await ui.send(interaction, ui.warn_card(
+                "Too long", "Discord timeouts are capped at **28 days**."
+            ), ephemeral=True)
             return
         try:
             until = datetime.now(timezone.utc) + delta
             await member.timeout(until, reason=f"{interaction.user} — {reason}")
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"I couldn't mute this member (`{getattr(e, 'status', 'error')}`).", ephemeral=True
-            )
+            await ui.send(interaction, ui.error_card(
+                "Timeout failed",
+                f"Discord refused the request (`{getattr(e, 'status', 'error')}`).",
+            ), ephemeral=True)
             return
 
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -333,8 +349,7 @@ class Moderation(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_MOD, ephemeral=True)
 
         await loghub.mod_action(
             interaction.guild, "Timeout appliqué", member, interaction.user,
@@ -351,11 +366,14 @@ class Moderation(commands.Cog):
         try:
             await member.timeout(None, reason=f"{interaction.user} — {reason}")
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"I couldn't remove the timeout (`{getattr(e, 'status', 'error')}`).", ephemeral=True
-            )
+            await ui.send(interaction, ui.error_card(
+                "Unmute failed",
+                f"Discord refused the request (`{getattr(e, 'status', 'error')}`).",
+            ), ephemeral=True)
             return
-        await interaction.followup.send(f"✓ Timeout removed for {member.mention}.", ephemeral=True)
+        await ui.send(interaction, ui.ok_card(
+            "Timeout removed", f"{member.mention} can speak again."
+        ), ephemeral=True)
         await loghub.mod_action(
             interaction.guild, "Timeout retiré", member, interaction.user,
             reason=reason, color=0x57F287, thumbnail=str(member.display_avatar.url),
@@ -382,7 +400,7 @@ class Moderation(commands.Cog):
         ts = ts_now()
 
         await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -412,8 +430,7 @@ class Moderation(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_MOD, ephemeral=True)
 
         await loghub.mod_action(
             interaction.guild, f"Avertissement `#{count}`", member, interaction.user,
@@ -439,7 +456,9 @@ class Moderation(commands.Cog):
         warns_list = data.get(str(interaction.guild_id), {}).get(str(member.id), [])
 
         if not warns_list:
-            await interaction.response.send_message(f"{member.mention} has no warnings.", ephemeral=True)
+            await ui.send(interaction, ui.ok_card(
+                "No warnings", f"{member.mention} has a clean record. ✨"
+            ), ephemeral=True)
             return
 
         # On n'affiche que les 15 dernières avec des raisons bornées : un membre
@@ -456,7 +475,7 @@ class Moderation(commands.Cog):
             lines.insert(0, f"-# … {offset} earlier warning(s) hidden")
 
         await interaction.response.defer(ephemeral=True)
-        await api_send(interaction.channel.id, {
+        await ui.send_raw(interaction, {
             "flags": 32768,
             "components": [
                 {
@@ -478,8 +497,7 @@ class Moderation(commands.Cog):
                     ],
                 }
             ],
-        })
-        await interaction.delete_original_response()
+        }, accent=ui.ACCENT_MOD, ephemeral=True)
 
     @app_commands.command(name="clearwarnings", description="Clear all warnings for a member.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -488,7 +506,9 @@ class Moderation(commands.Cog):
         data = db.warns()
         data.setdefault(str(interaction.guild_id), {})[str(member.id)] = []
         db.save_warns(data)
-        await interaction.response.send_message(f"✓ Warnings cleared for {member.mention}.", ephemeral=True)
+        await ui.send(interaction, ui.ok_card(
+            "Warnings cleared", f"{member.mention} starts over with a clean record."
+        ), ephemeral=True)
         await loghub.mod_action(
             interaction.guild, "Avertissements effacés", member, interaction.user,
             color=0x95A5A6, thumbnail=str(member.display_avatar.url),
@@ -546,10 +566,11 @@ class Moderation(commands.Cog):
             color=0xED4245,
         )
 
-        msg = f"✓ Deleted `{len(deleted)}` message(s)."
+        body = f"Deleted `{len(deleted)}` message(s) in {interaction.channel.mention}."
         if old_count:
-            msg += f"\n⚠️ `{old_count}` message(s) skipped (pinned or older than 14 days)."
-        await interaction.followup.send(msg, ephemeral=True)
+            body += (f"\n⚠️ `{old_count}` message(s) skipped "
+                     "(pinned, or older than 14 days).")
+        await ui.send(interaction, ui.ok_card("Purge done", body), ephemeral=True)
 
     @app_commands.command(name="slowmode", description="Set the slowmode of a channel.")
     @app_commands.checks.has_permissions(manage_channels=True)
@@ -559,12 +580,13 @@ class Moderation(commands.Cog):
         try:
             await interaction.channel.edit(slowmode_delay=seconds)
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"I couldn't change the slowmode (`{getattr(e, 'status', 'error')}`).", ephemeral=True
-            )
+            await ui.send(interaction, ui.error_card(
+                "Slowmode failed",
+                f"Discord refused the request (`{getattr(e, 'status', 'error')}`).",
+            ), ephemeral=True)
             return
-        msg = "✓ Slowmode **disabled**." if seconds == 0 else f"✓ Slowmode set to **{seconds}s**."
-        await interaction.followup.send(msg, ephemeral=True)
+        msg = "Slowmode **disabled**." if seconds == 0 else f"Slowmode set to **{seconds}s**."
+        await ui.send(interaction, ui.ok_card("Slowmode updated", msg), ephemeral=True)
         await loghub.mod_action(
             interaction.guild, "Slowmode", interaction.channel, interaction.user,
             reason=msg.replace("✓ ", ""), color=0x3498DB,
@@ -583,11 +605,14 @@ class Moderation(commands.Cog):
                 overwrite.send_messages = False
                 await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"I couldn't lock this channel (`{getattr(e, 'status', 'error')}`).", ephemeral=True
-            )
+            await ui.send(interaction, ui.error_card(
+                "Lock failed",
+                f"Discord refused the request (`{getattr(e, 'status', 'error')}`).",
+            ), ephemeral=True)
             return
-        await interaction.followup.send("🔒 Channel locked.", ephemeral=True)
+        await ui.send(interaction, ui.ok_card(
+            "🔒 Channel locked", f"{interaction.channel.mention} is read-only until unlocked."
+        ), ephemeral=True)
         await loghub.mod_action(
             interaction.guild, "Salon verrouillé", interaction.channel, interaction.user,
             color=0xED4245,
@@ -606,11 +631,14 @@ class Moderation(commands.Cog):
                 overwrite.send_messages = None
                 await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
         except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"I couldn't unlock this channel (`{getattr(e, 'status', 'error')}`).", ephemeral=True
-            )
+            await ui.send(interaction, ui.error_card(
+                "Unlock failed",
+                f"Discord refused the request (`{getattr(e, 'status', 'error')}`).",
+            ), ephemeral=True)
             return
-        await interaction.followup.send("🔓 Channel unlocked.", ephemeral=True)
+        await ui.send(interaction, ui.ok_card(
+            "🔓 Channel unlocked", f"{interaction.channel.mention} is open for everyone again."
+        ), ephemeral=True)
         await loghub.mod_action(
             interaction.guild, "Salon déverrouillé", interaction.channel, interaction.user,
             color=0x57F287,
@@ -648,47 +676,34 @@ class Moderation(commands.Cog):
                 if role:
                     ping_text = role.mention
 
-        components = [
-            {
-                "type": 17,
-                "accent_color": 0x9B8EC4,
-                "components": [
-                    {
-                        "type": 9,
-                        "components": [
-                            {"type": 10, "content": f"# 📢 {title}"},
-                        ],
-                        "accessory": {
-                            "type": 11,
-                            "media": {
-                                "url": str(interaction.guild.icon.url)
-                                if interaction.guild.icon
-                                else "https://i.ibb.co/WWbL1v1k/7391989548e4747ad18756fa467b74da.webp"
-                            },
-                        },
-                    },
-                    {"type": 14, "divider": True, "spacing": 1},
-                    {"type": 10, "content": message},
-                    {"type": 14, "divider": True, "spacing": 1},
-                    {
-                        "type": 10,
-                        "content": f"-# Announcement by {interaction.user.mention} · <t:{ts}:F>",
-                    },
-                ],
-            }
-        ]
-
+        # Carte d'annonce construite avec le design system (accent violet info).
+        annonce = ui.Card(f"# 📢 {title}", accent=ui.ACCENT_INFO, thumbnail=(
+            str(interaction.guild.icon.url) if interaction.guild.icon
+            else "https://i.ibb.co/WWbL1v1k/7391989548e4747ad18756fa467b74da.webp"
+        ))
+        annonce.text(message)
+        annonce.divider(spacing=1).footer(
+            f"Announcement by {interaction.user.display_name} · <t:{ts}:F>"
+        )
+        payload = annonce.payload()
         if ping_text:
-            ping_components = [{"type": 10, "content": ping_text}] + components[0]["components"]
-            components[0]["components"] = ping_components
+            payload["components"][0]["components"].insert(0, {"type": 10, "content": ping_text})
 
         status, resp = await api_send(
             channel.id,
-            {"flags": 32768, "components": components},
+            payload,
             allowed_mentions=MENTIONS_ALL if ping_text else None,
         )
-        msg = f"✓ Announcement posted in {channel.mention}!" if status in (200, 201) else f"✗ Error `{status}`"
-        await interaction.followup.send(msg, ephemeral=True)
+        if status in (200, 201):
+            await ui.send(interaction, ui.ok_card(
+                "Announcement posted",
+                f"{channel.mention} received **{title}**.",
+            ), ephemeral=True)
+        else:
+            await ui.send(interaction, ui.error_card(
+                "Announcement failed",
+                f"Discord answered `{status}`. Check my permissions in {channel.mention}.",
+            ), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
