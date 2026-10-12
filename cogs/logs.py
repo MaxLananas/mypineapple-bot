@@ -1,7 +1,7 @@
 """Logs « Big Brother » — surveillance complète du serveur.
 
 Chaque type d'événement part dans son salon dédié (catégorie privée créée par
-``/logssetup``, visible uniquement par le rôle ``LOG_ACCESS_ROLE_ID``) :
+``/logs-setup``, visible uniquement par le rôle ``LOG_ACCESS_ROLE_ID``) :
 
 | Salon | Contenu |
 |-------|---------|
@@ -24,7 +24,7 @@ Chaque type d'événement part dans son salon dédié (catégorie privée créé
 | 📊 statistiques | rapports périodiques + `/logstats` |
 | 🤖 bot | démarrages, erreurs, synchronisation |
 
-Sans ``/logssetup``, tout retombe automatiquement sur des threads dans
+Sans ``/logs-setup``, tout retombe automatiquement sur des threads dans
 ``LOG_HUB_CHANNEL_ID`` : aucun événement n'est perdu.
 """
 from __future__ import annotations
@@ -39,6 +39,10 @@ from discord.ext import commands, tasks
 
 import utils.db as db
 import utils.loghub as loghub
+from utils.api import (
+    queue_depth as api_queue_depth,
+    rate_limit_snapshot as api_rate_limit_snapshot,
+)
 from utils.api import get_session
 from utils.helpers import ts_now
 from config import LOG_ACCESS_ROLE_ID, SUPPORT_ROLE_ID
@@ -178,11 +182,17 @@ def log_access_only():
 # ── Cog ──────────────────────────────────────────────────────────────────────
 
 class Logs(commands.Cog):
-    """Surveillance complète : messages, profils, vocal, modération, audit…"""
+    """Surveillance complète : messages, membres, modération, serveur, audit…"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.digest_loop.start()
+        # Bouton EN/FR des messages-guides : vue persistante (custom_id fixe),
+        # réenregistrée à chaque démarrage pour survivre aux restarts.
+        try:
+            bot.add_view(loghub.LogGuideLangView())
+        except Exception as e:      # jamais bloquant au chargement du cog
+            log.warning("LogGuideLangView: %s", e)
 
     def cog_unload(self):
         self.digest_loop.cancel()
@@ -265,7 +275,7 @@ class Logs(commands.Cog):
         }
 
         await loghub.log(
-            before.guild, "edits",
+            before.guild, "messages",
             "## ✏️ Message modifié\n"
             f"**Auteur** {before.author.mention} (`{before.author}` · `{before.author.id}`)\n"
             f"**Salon** {before.channel.mention} · [ouvrir]({after.jump_url})\n"
@@ -305,7 +315,7 @@ class Logs(commands.Cog):
             )
 
         await loghub.log(
-            message.guild, "deletes",
+            message.guild, "messages",
             "## 🗑️ Message supprimé\n"
             f"**Auteur** {message.author.mention} (`{message.author}` · `{message.author.id}`)\n"
             f"**Salon** {message.channel.mention}\n"
@@ -337,7 +347,7 @@ class Logs(commands.Cog):
         loghub.bump(guild.id, "deletes", amount=len(messages), channel_id=first.channel.id)
 
         await loghub.log(
-            guild, "deletes",
+            guild, "messages",
             f"## 🧹 Suppression en masse — {len(messages)} messages\n"
             f"**Salon** {first.channel.mention}\n"
             f"**At** {_stamp(datetime.now(timezone.utc))}\n\n"
@@ -369,7 +379,7 @@ class Logs(commands.Cog):
 
         if new_acc:
             await loghub.log(
-                guild, "security",
+                guild, "moderation",
                 "## 🚨 Nouveau compte détecté\n"
                 f"**Membre** {member.mention} (`{member.id}`)\n"
                 f"**Créé il y a** `{age_h:.1f} h` · {_stamp(created)}\n"
@@ -377,7 +387,7 @@ class Logs(commands.Cog):
                 f"**Salon d'arrivée** {guild.system_channel.mention if guild.system_channel else '?'}\n\n"
                 f"<@&{SUPPORT_ROLE_ID}> — vérification recommandée.",
                 thumbnail=str(member.display_avatar.url),
-                mentions={"parse": [], "roles": [SUPPORT_ROLE_ID], "users": [], "replied_user": False},
+                mentions={"parse": [], "server": [SUPPORT_ROLE_ID], "users": [], "replied_user": False},
             )
 
     @commands.Cog.listener()
@@ -423,7 +433,7 @@ class Logs(commands.Cog):
         removed = [r for r in before.roles if r not in after.roles]
         if added:
             await loghub.log(
-                guild, "roles",
+                guild, "server",
                 "## ➕ Rôle(s) ajouté(s)\n"
                 f"**Membre** {after.mention} (`{after.id}`)\n"
                 f"**Rôles** {' '.join(r.mention for r in added)}",
@@ -431,7 +441,7 @@ class Logs(commands.Cog):
             )
         if removed:
             await loghub.log(
-                guild, "roles",
+                guild, "server",
                 "## ➖ Rôle(s) retiré(s)\n"
                 f"**Membre** {after.mention} (`{after.id}`)\n"
                 f"**Rôles** {' '.join(r.mention for r in removed)}",
@@ -474,7 +484,7 @@ class Logs(commands.Cog):
         # Nom d'utilisateur / nom global
         if before.name != after.name or before.global_name != after.global_name:
             await loghub.log(
-                guild, "profiles",
+                guild, "members",
                 "## 🪪 Nom modifié\n"
                 f"**Membre** {member.mention} (`{member.id}`)\n"
                 f"**Nom d'utilisateur** `{before.name}` → `{after.name}`\n"
@@ -485,7 +495,7 @@ class Logs(commands.Cog):
         # Avatar : ancien ET nouveau
         if before.display_avatar.url != after.display_avatar.url:
             await loghub.log(
-                guild, "profiles",
+                guild, "members",
                 "## 🖼️ Avatar modifié\n"
                 f"**Membre** {member.mention} (`{member.id}`)",
                 gallery=[
@@ -513,14 +523,14 @@ class Logs(commands.Cog):
             if old_banner:
                 gallery.insert(0, (old_banner, "Avant"))
             await loghub.log(
-                guild, "profiles",
+                guild, "members",
                 "## 🏳️ Bannière modifiée\n"
                 f"**Membre** {member.mention} (`{member.id}`)",
                 gallery=gallery,
             )
         elif not first_seen and old_banner and not new_banner:
             await loghub.log(
-                guild, "profiles",
+                guild, "members",
                 "## 🏳️ Bannière retirée\n"
                 f"**Membre** {member.mention} (`{member.id}`)",
                 gallery=[(old_banner, "Avant")],
@@ -529,7 +539,7 @@ class Logs(commands.Cog):
         # Bio / « à propos »
         if not first_seen and bio != prev.get("bio"):
             await loghub.log(
-                guild, "profiles",
+                guild, "members",
                 "## 📝 Bio modifiée\n"
                 f"**Membre** {member.mention} (`{member.id}`)\n\n"
                 f"**Avant**\n{_esc(prev.get('bio') or '', 300) or '*vide*'}\n\n"
@@ -539,7 +549,7 @@ class Logs(commands.Cog):
 
         if not first_seen and accent is not None and accent != prev.get("accent"):
             await loghub.log(
-                guild, "profiles",
+                guild, "members",
                 "## 🎨 Couleur d'accent modifiée\n"
                 f"**Membre** {member.mention} (`{member.id}`)\n"
                 f"**Couleur** `#{accent:06x}`",
@@ -581,7 +591,7 @@ class Logs(commands.Cog):
         if before.status != after.status:
             _presence_cooldown[after.id] = now
             await loghub.log(
-                after.guild, "status",
+                after.guild, "members",
                 "## 🔄 Statut modifié\n"
                 f"**Membre** {after.mention} (`{after.id}`)\n"
                 f"**Avant** {status_icon.get(before.status, '?')} `{before.status}`\n"
@@ -598,7 +608,7 @@ class Logs(commands.Cog):
         if after_custom and after_custom != before_custom:
             _presence_cooldown[after.id] = now
             await loghub.log(
-                after.guild, "status",
+                after.guild, "members",
                 "## 💬 Statut personnalisé\n"
                 f"**Membre** {after.mention} (`{after.id}`)\n"
                 f"**Avant** {_esc(before_custom or '—', 200)}\n"
@@ -626,7 +636,7 @@ class Logs(commands.Cog):
         if after_act and after_act != before_act:
             _presence_cooldown[after.id] = now
             await loghub.log(
-                after.guild, "status",
+                after.guild, "members",
                 "## 🎮 Activité\n"
                 f"**Membre** {after.mention} (`{after.id}`)\n"
                 f"**Avant** {before_act or '*aucune*'}\n"
@@ -649,7 +659,7 @@ class Logs(commands.Cog):
         if before.channel is None and after.channel is not None:
             _voice_sessions[key] = datetime.now(timezone.utc).timestamp()
             await loghub.log(
-                guild, "voice",
+                guild, "server",
                 "## 🔊 Entrée en vocal\n"
                 f"**Membre** {member.mention} (`{member.id}`)\n"
                 f"**Salon** {after.channel.mention}",
@@ -665,7 +675,7 @@ class Logs(commands.Cog):
                 duration = f"\n**Durée** `{h} h {m} min {s} s`"
                 loghub.bump(guild.id, "voice_seconds", secs, user_id=member.id)
             await loghub.log(
-                guild, "voice",
+                guild, "server",
                 "## 🔇 Sortie de vocal\n"
                 f"**Membre** {member.mention} (`{member.id}`)\n"
                 f"**Salon** {before.channel.mention}{duration}",
@@ -673,7 +683,7 @@ class Logs(commands.Cog):
             )
         elif before.channel != after.channel and before.channel and after.channel:
             await loghub.log(
-                guild, "voice",
+                guild, "server",
                 "## 🔀 Changement de vocal\n"
                 f"**Membre** {member.mention} (`{member.id}`)\n"
                 f"**De** {before.channel.mention}\n"
@@ -696,7 +706,7 @@ class Logs(commands.Cog):
             changes.append("📷 **Caméra activée**" if after.self_video else "📷 **Caméra coupée**")
         if changes:
             await loghub.log(
-                guild, "voice",
+                guild, "server",
                 f"## 🎛️ État vocal — {member.mention}\n" + "\n".join(changes)
                 + f"\n**Salon** {(after.channel or before.channel).mention if (after.channel or before.channel) else '?'}",
                 thumbnail=str(member.display_avatar.url),
@@ -707,7 +717,7 @@ class Logs(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
         await loghub.log(
-            channel.guild, "channels",
+            channel.guild, "server",
             "## 📺 Salon créé\n"
             f"**Nom** {channel.mention} (`{channel.name}`)\n"
             f"**Type** `{channel.type}` · **ID** `{channel.id}`"
@@ -717,7 +727,7 @@ class Logs(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
         await loghub.log(
-            channel.guild, "channels",
+            channel.guild, "server",
             "## 📺 Salon supprimé\n"
             f"**Nom** `{channel.name}` · **Type** `{channel.type}` · **ID** `{channel.id}`",
         )
@@ -758,7 +768,7 @@ class Logs(commands.Cog):
         if not changes:
             return
         await loghub.log(
-            after.guild, "channels",
+            after.guild, "server",
             f"## 🛠️ Salon modifié — {after.mention}\n" + "\n".join(changes),
         )
 
@@ -767,7 +777,7 @@ class Logs(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_role_create(self, role: discord.Role):
         await loghub.log(
-            role.guild, "roles",
+            role.guild, "server",
             "## 🎭 Rôle créé\n"
             f"**Nom** {role.mention} (`{role.name}`)\n"
             f"**Couleur** `{role.colour}` · **Mentionnable** `{role.mentionable}`\n"
@@ -777,7 +787,7 @@ class Logs(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role):
         await loghub.log(
-            role.guild, "roles",
+            role.guild, "server",
             "## 🎭 Rôle supprimé\n"
             f"**Nom** `{role.name}` · **Couleur** `{role.colour}` · **ID** `{role.id}`\n"
             f"**Membres concernés** `{len(role.members)}`",
@@ -807,7 +817,7 @@ class Logs(commands.Cog):
         if not changes:
             return
         await loghub.log(
-            after.guild, "roles",
+            after.guild, "server",
             f"## 🎭 Rôle modifié — {after.mention}\n" + "\n".join(changes),
         )
 
@@ -816,7 +826,7 @@ class Logs(commands.Cog):
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
         await loghub.log(
-            thread.guild, "threads",
+            thread.guild, "server",
             "## 🧵 Fil créé\n"
             f"**Nom** {thread.mention} (`{thread.name}`)\n"
             f"**Salon parent** {thread.parent.mention if thread.parent else '?'}\n"
@@ -826,7 +836,7 @@ class Logs(commands.Cog):
     @commands.Cog.listener()
     async def on_thread_delete(self, thread: discord.Thread):
         await loghub.log(
-            thread.guild, "threads",
+            thread.guild, "server",
             "## 🧵 Fil supprimé\n"
             f"**Nom** `{thread.name}` · **ID** `{thread.id}`\n"
             f"**Salon parent** {thread.parent.mention if thread.parent else '?'}",
@@ -844,7 +854,7 @@ class Logs(commands.Cog):
         if not changes:
             return
         await loghub.log(
-            after.guild, "threads",
+            after.guild, "server",
             f"## 🧵 Fil modifié — {after.mention}\n" + "\n".join(changes),
         )
 
@@ -855,7 +865,7 @@ class Logs(commands.Cog):
         if not invite.guild:
             return
         await loghub.log(
-            invite.guild, "invites",
+            invite.guild, "members",
             "## 🔗 Invitation créée\n"
             f"**Code** `{invite.code}` — discord.gg/{invite.code}\n"
             f"**Par** {invite.inviter.mention if invite.inviter else '?'} "
@@ -871,7 +881,7 @@ class Logs(commands.Cog):
         if not invite.guild:
             return
         await loghub.log(
-            invite.guild, "invites",
+            invite.guild, "members",
             "## 🔗 Invitation supprimée\n"
             f"**Code** `{invite.code}`\n"
             f"**Salon** {invite.channel.mention if invite.channel else '?'}",
@@ -974,8 +984,8 @@ class Logs(commands.Cog):
     async def on_audit_log_entry_create(self, entry: discord.AuditLogEntry):
         guild = entry.guild
         # Les actions du bot lui-même sont déjà logguées à la source
-        # (`loghub.mod_action`, `/logssetup`, …) : sans ce filtre, l'installation
-        # des 18 salons générait 20+ entrées d'audit d'un coup.
+        # (`loghub.mod_action`, `/logs-setup`, …) : sans ce filtre, l'installation
+        # des salons générait 20+ entrées d'audit d'un coup.
         if getattr(entry.user, "id", 0) == getattr(self.bot.user, "id", 0):
             return
 
@@ -1076,6 +1086,146 @@ class Logs(commands.Cog):
             thumbnail=str(interaction.user.display_avatar.url),
         )
 
+    # ── Événements hors cache (plus de logs, plus de détails) ───────────────
+
+    # discord.py déclenche *à la fois* l'événement « classique » (message en
+    # cache) et le « raw » (toujours). On ne loggue donc via raw que lorsque le
+    # message n'était PAS en cache : sinon on aurait chaque suppression en
+    # double. C'est ce qui manquait pour les vieux messages.
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        if payload.cached_message is not None:
+            return
+        guild = self.bot.get_guild(payload.guild_id) if payload.guild_id else None
+        if guild is None or loghub.is_log_channel(payload.channel_id):
+            return
+        channel = guild.get_channel(payload.channel_id)
+        loghub.bump(guild.id, "deletes", channel_id=payload.channel_id)
+        await loghub.log(
+            guild, "messages",
+            "## 🗑️ Message supprimé (hors cache)\n"
+            f"**Salon** {channel.mention if channel else f'`{payload.channel_id}`'}\n"
+            f"**Message** `{payload.message_id}`\n\n"
+            "*Le message n'était plus en mémoire : Discord ne renvoie plus son "
+            "contenu. C'est le cas des messages anciens ou envoyés avant le "
+            "démarrage du bot.*",
+            queued=True,
+        )
+
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent):
+        if payload.cached_message is not None:
+            return
+        data = payload.data or {}
+        # Les mises à jour d'embed (souvent déclenchées par des bots) n'ont pas
+        # de contenu : inutile de polluer le salon avec ça.
+        if "content" not in data:
+            return
+        guild = self.bot.get_guild(payload.guild_id) if payload.guild_id else None
+        if guild is None or loghub.is_log_channel(payload.channel_id):
+            return
+        channel = guild.get_channel(payload.channel_id)
+        loghub.bump(guild.id, "edits", channel_id=payload.channel_id)
+        await loghub.log(
+            guild, "messages",
+            "## ✏️ Message modifié (hors cache)\n"
+            f"**Salon** {channel.mention if channel else f'`{payload.channel_id}`'}\n"
+            f"**Message** `{payload.message_id}` · "
+            f"[ouvrir](https://discord.com/channels/{guild.id}/{payload.channel_id}/{payload.message_id})\n\n"
+            f"**Nouveau contenu**\n{_esc(data.get('content') or '*vide*')}",
+            queued=True,
+        )
+
+    @commands.Cog.listener()
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
+        if payload.cached_messages:
+            return      # déjà traité par on_bulk_message_delete
+        guild = self.bot.get_guild(payload.guild_id) if payload.guild_id else None
+        if guild is None or loghub.is_log_channel(payload.channel_id):
+            return
+        channel = guild.get_channel(payload.channel_id)
+        ids = list(payload.message_ids)[:15]
+        loghub.bump(guild.id, "deletes", amount=len(payload.message_ids),
+                    channel_id=payload.channel_id)
+        await loghub.log(
+            guild, "messages",
+            f"## 🧹 Suppression en masse — {len(payload.message_ids)} messages\n"
+            f"**Salon** {channel.mention if channel else f'`{payload.channel_id}`'}\n"
+            f"**At** {_stamp(datetime.now(timezone.utc))}\n\n"
+            "**IDs concernés**\n" + "\n".join(f"• `{mid}`" for mid in ids)
+            + (f"\n… et **{len(payload.message_ids) - len(ids)}** autre(s)"
+               if len(payload.message_ids) > len(ids) else ""),
+        )
+
+    # ── Événements programmés ───────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_create(self, event: discord.ScheduledEvent):
+        await loghub.log(
+            event.guild, "server",
+            "## 🎉 Événement programmé créé\n"
+            f"**Nom** {_esc(event.name, 200)}\n"
+            f"**Quand** {_stamp(event.start_time)}\n"
+            f"**Lieu** {getattr(event.channel, 'mention', None) or event.location or '—'}\n"
+            f"**Créé par** {event.creator.mention if getattr(event, 'creator', None) else '—'}\n"
+            f"**ID** `{event.id}`",
+        )
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_update(
+        self, before: discord.ScheduledEvent, after: discord.ScheduledEvent,
+    ):
+        changes = []
+        if before.name != after.name:
+            changes.append(f"**Nom** {_esc(before.name, 100)} → {_esc(after.name, 100)}")
+        if before.start_time != after.start_time:
+            changes.append(f"**Début** {_stamp(before.start_time)} → {_stamp(after.start_time)}")
+        if before.status != after.status:
+            changes.append(f"**Statut** `{before.status.name}` → `{after.status.name}`")
+        if before.description != after.description:
+            changes.append("**Description** modifiée")
+        if not changes:
+            return
+        await loghub.log(
+            after.guild, "server",
+            "## 📝 Événement programmé modifié\n"
+            f"**Nom** {_esc(after.name, 200)}\n"
+            f"**ID** `{after.id}`\n\n" + "\n".join(changes),
+        )
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_delete(self, event: discord.ScheduledEvent):
+        await loghub.log(
+            event.guild, "server",
+            "## 🗑️ Événement programmé supprimé\n"
+            f"**Nom** {_esc(event.name, 200)}\n"
+            f"**Début prévu** {_stamp(event.start_time)}\n"
+            f"**ID** `{event.id}`",
+        )
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_user_add(
+        self, event: discord.ScheduledEvent, user: discord.User,
+    ):
+        await loghub.log(
+            event.guild, "server",
+            "## 🙋 Inscription à un événement\n"
+            f"**Membre** {user.mention} (`{user.id}`)\n"
+            f"**Événement** {_esc(event.name, 200)}",
+        )
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_user_remove(
+        self, event: discord.ScheduledEvent, user: discord.User,
+    ):
+        await loghub.log(
+            event.guild, "server",
+            "## 🚶 Désinscription d'un événement\n"
+            f"**Membre** {user.mention} (`{user.id}`)\n"
+            f"**Événement** {_esc(event.name, 200)}",
+        )
+
     # ── Rapport périodique ──────────────────────────────────────────────────
 
     @tasks.loop(hours=6)
@@ -1144,39 +1294,77 @@ class Logs(commands.Cog):
             f"### Top salons\n{format_channels(top_channels)}\n\n"
             f"### Top membres\n{format_users(top_users)}"
         )
-        await loghub.log(guild, "stats", content)
+        await loghub.log(guild, "bot", content)
 
     # ── Commandes admin ─────────────────────────────────────────────────────
 
     @app_commands.command(
-        name="logssetup",
-        description="Crée la catégorie privée et les salons de logs (accès restreint).",
+        name="logs-setup",
+        description="Installe/répare le système de logs (7 salons + messages-guides).",
     )
     @app_commands.describe(
-        recreer="Supprimer puis recréer les salons de logs (l'historique des logs est perdu)",
+        recreer="Supprimer puis recréer les salons de logs (⚠️ l'historique de ces salons est perdu)",
         nom_categorie="Nom de la catégorie (défaut : logs)",
+        langue="Langue des messages-guides (anglais par défaut, bouton FR dans chaque salon)",
     )
+    @app_commands.choices(langue=[
+        app_commands.Choice(name="🇬🇧 English (défaut)", value="en"),
+        app_commands.Choice(name="🇫🇷 Français", value="fr"),
+    ])
     @app_commands.guild_only()
     @log_access_only()
-    async def logssetup(
+    async def logs_setup(
         self,
         interaction: discord.Interaction,
         recreer: bool = False,
         nom_categorie: str = "logs",
+        langue: app_commands.Choice[str] | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         if guild is None:
             return
 
+        if recreer:
+            confirm = RecreateLogsView(interaction.user.id, nom_categorie, langue)
+            await interaction.followup.send(
+                "⚠️ **Recréer les salons de logs ?**\n"
+                "Les salons de logs actuels seront **supprimés** (leur historique "
+                "part avec) puis recréés. Les événements passés ne seront pas "
+                "récupérables.",
+                view=confirm,
+                ephemeral=True,
+            )
+            return
+
+        await self._run_setup(interaction, nom_categorie, langue, recreate=False)
+
+    async def _run_setup(
+        self,
+        interaction: discord.Interaction,
+        nom_categorie: str,
+        langue: app_commands.Choice[str] | None = None,
+        *,
+        recreate: bool = False,
+    ) -> None:
+        """Installe (ou répare) les salons de logs puis poste les guides."""
+        guild = interaction.guild
+        if guild is None:
+            return
+
         try:
-            # Pause : la création des 18 salons génère des dizaines d'événements
-            # (salon créé/modifié) qu'il ne faut pas se mettre à logguer.
+            # Pause : la création/édition des salons génère des dizaines
+            # d'événements qu'il ne faut pas se mettre à logguer.
             loghub.pause()
             try:
+                migrated = loghub.migrate_settings()
                 mapping, created, reused = await loghub.ensure_channels(
-                    guild, recreate=recreer, category_name=nom_categorie[:100] or "logs",
+                    guild, recreate=recreate, category_name=(nom_categorie or "logs")[:100],
                 )
+                if langue is not None:
+                    for cid in mapping.values():
+                        loghub.set_guide_lang(int(cid), langue.value)
+                guides = await loghub.post_guides(guild)
             finally:
                 loghub.resume()
         except discord.Forbidden:
@@ -1199,23 +1387,56 @@ class Logs(commands.Cog):
             "## 🛠️ Installation des logs\n"
             f"**Par** {interaction.user.mention}\n"
             f"**Salons** `{len(mapping)}` configurés\n"
+            f"**Réglages migrés** `{migrated}`\n"
             f"{role_line}",
         )
 
-        preview_created = "\n".join(created[:20]) or "*aucun*"
-        preview_reused  = "\n".join(reused[:20]) or "*aucun*"
+        def _preview(items: list[str], limit: int = 12) -> str:
+            return "\n".join(items[:limit]) or "*aucun*"
+
+        guide_line = " · ".join(f"{k} {v}" for k, v in guides.items()) or "*aucun*"
 
         await interaction.followup.send(
-            "✅ **Système de logs installé !**\n\n"
+            "✅ **Système de logs installé !**\n"
             f"{role_line}\n"
-            f"**Catégorie** <#{loghub.category_id()}> · **{len(mapping)} salons**\n\n"
-            f"**Créés ({len(created)})**\n{preview_created}\n\n"
-            f"**Réutilisés ({len(reused)})**\n{preview_reused}\n\n"
+            f"**Catégorie** <#{loghub.category_id()}> · **{len(mapping)} salons**"
+            + (f" · **{migrated}** réglage(s) migré(s)" if migrated else "")
+            + "\n\n"
+            f"**Créés ({len(created)})**\n{_preview(created)}\n\n"
+            f"**Réutilisés ({len(reused)})**\n{_preview(reused)}\n\n"
+            f"**Messages-guides** postés ou mis à jour : {guide_line}\n"
+            "-# EN par défaut — le bouton du message-guide traduit tout en FR "
+            "(et inversement), pour tout le monde.\n\n"
             "-# ⚠️ Les membres avec la permission *Administrateur* voient tous les "
             "salons (limitation Discord, impossible à contourner).\n"
-            "-# Utilise `/logtoggle` pour couper un type de log et `/logstats` pour "
-            "le tableau de bord.",
+            "-# `/logtoggle` coupe un type de log · `/logstats` affiche le tableau de "
+            "bord · `/logs-guide` renvoie les messages-guides.",
             ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="logs-guide",
+        description="(Re)poste les messages-guides en haut des salons de logs.",
+    )
+    @app_commands.describe(
+        reposter="Supprimer l'ancien guide et en poster un nouveau au lieu de le modifier",
+    )
+    @app_commands.guild_only()
+    @log_access_only()
+    async def logs_guide(self, interaction: discord.Interaction, reposter: bool = False):
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild is None:
+            return
+        result = await loghub.post_guides(interaction.guild, force=reposter)
+        if not result:
+            await interaction.followup.send(
+                "❌ Aucun salon de logs configuré — lance `/logs-setup` d'abord.",
+                ephemeral=True,
+            )
+            return
+        lines = "\n".join(f"• **{key}** — {state}" for key, state in result.items())
+        await interaction.followup.send(
+            "🧭 **Messages-guides mis à jour**\n" + lines, ephemeral=True
         )
 
     @app_commands.command(name="logtoggle", description="Activer/désactiver un type de log.")
@@ -1322,6 +1543,26 @@ class Logs(commands.Cog):
                 lines.append(f"• {m.mention if m else f'`{uid}`'} — **{count}** invitation(s)")
             embed.add_field(name="🚪 Top parrains", value="\n".join(lines) or "—", inline=False)
 
+        # Santé du système de logs : sans cette ligne, impossible de savoir si
+        # des logs sont retardés, perdus, ou si Discord nous limite.
+        rl = api_rate_limit_snapshot()
+        dropped = loghub.dropped_count(guild.id)
+        burst = int(loghub.breaker_remaining(guild.id))
+        pending = api_queue_depth()
+        toggles = loghub.toggles_for(guild.id)
+        muted = [k for k, on in toggles.items() if not on]
+        health = (
+            f"Salons `{len(loghub.channel_map())}/{len(loghub.LOG_CHANNELS)}`\n"
+            f"En attente d'envoi `{pending}`\n"
+            f"Perdus (file saturée) `{dropped}`\n"
+            f"Rate-limit Discord `{rl['count']}` requête(s)"
+            + (f" (max `{rl['wait_max']}s`)" if rl["wait_max"] else "")
+            + "\n"
+            + (f"Mode rafale 🟡 encore `{burst}s`" if burst else "Mode normal 🟢")
+            + (f"\nTypes coupés : {', '.join(muted)}" if muted else "")
+        )
+        embed.add_field(name="🩺 Santé des logs", value=health, inline=False)
+
         embed.set_footer(
             text=f"Logs : {len(loghub.channel_map())}/{len(loghub.LOG_CHANNELS)} salons configurés"
         )
@@ -1330,7 +1571,8 @@ class Logs(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @logssetup.error
+    @logs_setup.error
+    @logs_guide.error
     @logtoggle.error
     @logstats.error
     async def _log_cmd_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -1346,6 +1588,50 @@ class Logs(commands.Cog):
                 await interaction.response.send_message(msg, ephemeral=True)
         except Exception:
             pass
+
+
+class RecreateLogsView(discord.ui.View):
+    """Confirmation demandée avant de supprimer/recréer les salons de logs."""
+
+    def __init__(
+        self,
+        author_id: int,
+        category_name: str,
+        lang: app_commands.Choice[str] | None = None,
+    ):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.category_name = category_name
+        self.lang = lang
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "This confirmation isn't for you — run `/logs-setup` yourself.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Recreate everything", style=discord.ButtonStyle.danger, emoji="♻️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(
+            content="♻️ Recreating the log channels…", view=None
+        )
+        cog = interaction.client.get_cog("Logs")
+        if cog is None:
+            return
+        await cog._run_setup(  # type: ignore[attr-defined]
+            interaction, self.category_name, self.lang, recreate=True
+        )
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(
+            content="✅ Cancelled — nothing was deleted.", view=None
+        )
 
 
 async def setup(bot: commands.Bot):

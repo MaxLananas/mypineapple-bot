@@ -194,7 +194,7 @@ async def on_ready():
                 f"**Commandes** `{len(bot.tree.get_commands())}` · "
                 f"**Latence** `{round(bot.latency * 1000)} ms`\n"
                 f"**Logs** `{snapshot['configured']}/{snapshot['channels']}` salons "
-                + ("installés ✅" if snapshot["installed"] else "— `/logssetup` à lancer ⚠️"),
+                + ("installés ✅" if snapshot["installed"] else "— `/logs-setup` à lancer ⚠️"),
             )
         else:
             await loghub.broadcast(

@@ -89,7 +89,7 @@ class Invites(commands.Cog):
         uses = getattr(fresh_invite, "uses", "?")
         created = member.created_at
         await loghub.log(
-            guild, "invites",
+            guild, "members",
             "## 🚪 Source d'arrivée\n"
             f"**Membre** {member.mention} (`{member}` · `{member.id}`)\n"
             f"**Invité par** {inviter_member.mention if inviter_member else inviter.mention} "

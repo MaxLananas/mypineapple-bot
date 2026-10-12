@@ -2,7 +2,8 @@
 
 Architecture
 ------------
-* **18 salons** dans une catégorie privée (créée par ``/logssetup``), visible
+* **7 salons thématiques** dans une catégorie privée (créée par
+  ``/logs-setup``), visible
   uniquement par le rôle ``LOG_ACCESS_ROLE_ID`` (et le bot).
 * Si la catégorie n'existe pas encore (ou qu'un salon a été supprimé), on
   **retombe automatiquement** sur l'ancien mode « threads dans
@@ -23,7 +24,7 @@ from datetime import datetime, timezone
 import discord
 
 import utils.db as db
-from utils.api import api_send, api_send_queued, queue_depth
+from utils.api import api_edit, api_send, api_send_queued, queue_depth
 from config import LOG_HUB_CHANNEL_ID, LOG_ACCESS_ROLE_ID
 
 logger = logging.getLogger(__name__)
@@ -31,27 +32,172 @@ logger = logging.getLogger(__name__)
 CATEGORY_NAME = "logs"
 DEFAULT_ACCENT = 0x9B8EC4
 
+# ── Organisation des salons ──────────────────────────────────────────────────
+# 7 salons thématiques seulement (au lieu de 18) : beaucoup plus lisible, et
+# chaque salon a droit à un message-guide bilingue en haut (voir LOG_GUIDES).
 # key -> (nom du salon, sujet, couleur)
 LOG_CHANNELS: dict[str, tuple[str, str, int]] = {
-    "messages":   ("📥・messages",     "Tous les messages envoyés",                          0x5865F2),
-    "edits":      ("✏️・éditions",      "Messages modifiés — avant / après",                  0xFEE75C),
-    "deletes":    ("🗑️・suppressions",  "Messages supprimés — contenu et pièces jointes",     0xED4245),
-    "members":    ("👥・membres",       "Arrivées, départs, pseudos",                          0x57F287),
-    "profiles":   ("🖼️・profils",       "Avatar, bannière, bio, nom d'utilisateur",            0xC3B1E1),
-    "status":     ("🟢・statuts",       "Statuts et activités",                                0x9B8EC4),
-    "invites":    ("🚪・invitations",   "Qui invite qui, codes et sources",                    0x1ABC9C),
-    "commands":   ("⌨️・commandes",     "Toutes les slash-commands utilisées",                 0xEB459E),
-    "moderation": ("🔨・modération",    "Bans, kicks, timeouts, avertissements",               0xED4245),
-    "roles":      ("🎭・rôles",         "Rôles : création, suppression, attribution",          0xF1C40F),
-    "channels":   ("📺・salons",        "Salons, permissions, sujets",                         0x3498DB),
-    "voice":      ("🔊・vocal",         "Entrées, sorties et déplacements vocaux",             0x2ECC71),
-    "server":     ("⚙️・serveur",       "Serveur, émojis, boosts, webhooks",                  0x95A5A6),
-    "threads":    ("🧵・fils",          "Fils de discussion",                                  0x9B59B6),
-    "security":   ("🚨・sécurité",      "Nouveaux comptes, raids, anti-spam",                  0xED4245),
-    "audit":      ("🕵️・audit",         "Journal d'audit Discord (qui a fait quoi)",           0x2C3E50),
-    "stats":      ("📊・statistiques",  "Rapports périodiques",                                0xE67E22),
-    "bot":        ("🤖・bot",           "Démarrages, erreurs, synchronisation",                0x7289DA),
+    "messages":   ("💬・messages",    "Messages envoyés, modifiés et supprimés",           0x5865F2),
+    "members":    ("👥・membres",      "Arrivées, départs, pseudos, profils, invitations",   0x57F287),
+    "moderation": ("🔨・modération",   "Sanctions, avertissements, anti-spam, sécurité",     0xED4245),
+    "server":     ("⚙️・serveur",      "Salons, rôles, émojis, vocal, fils, événements",     0x3498DB),
+    "commands":   ("⌨️・commandes",    "Slash-commands exécutées et leurs erreurs",          0xEB459E),
+    "audit":      ("🕵️・audit",        "Journal d'audit Discord (qui a fait quoi)",         0x2C3E50),
+    "bot":        ("🤖・bot",          "Démarrages, erreurs, statistiques",                 0x7289DA),
 }
+
+# Ancienne organisation (18 salons) -> nouvelle (7) : sert à migrer les
+# réglages /logtoggle et à retrouver les anciens salons à supprimer.
+LOG_KEY_MIGRATION: dict[str, str] = {
+    "edits":      "messages",
+    "deletes":    "messages",
+    "profiles":   "members",
+    "status":     "members",
+    "invites":    "members",
+    "security":   "moderation",
+    "roles":      "server",
+    "channels":   "server",
+    "voice":      "server",
+    "threads":    "server",
+    "stats":      "bot",
+}
+
+# Noms des salons de l'ancienne organisation (pour proposer leur suppression).
+LEGACY_CHANNEL_NAMES: tuple[str, ...] = (
+    "📥・messages", "✏️・éditions", "🗑️・suppressions", "👥・membres", "🖼️・profils",
+    "🟢・statuts", "🚪・invitations", "⌨️・commandes", "🔨・modération", "🎭・rôles",
+    "📺・salons", "🔊・vocal", "⚙️・serveur", "🧵・fils", "🚨・sécurité",
+    "🕵️・audit", "📊・statistiques", "🤖・bot",
+)
+
+# ── Messages-guides (bilingues) ──────────────────────────────────────────────
+# Postés en haut de chaque salon par /logs-setup : ils expliquent ce qu'on
+# trouve ici et comment lire/paramétrer les logs. Anglais par défaut, le bouton
+# traduit tout le message en français (et inversement), comme pour les tickets.
+LOG_GUIDES: dict[str, dict[str, dict[str, str]]] = {
+    "messages": {
+        "en": {
+            "title": "# 💬 Messages",
+            "body": (
+                "Every message **sent, edited or deleted** on the server lands here.\n"
+                "You get the author (with ID), the channel, a jump link, the full "
+                "content, the attachments and the before/after on edits."
+            ),
+        },
+        "fr": {
+            "title": "# 💬 Messages",
+            "body": (
+                "Tous les messages **envoyés, modifiés ou supprimés** du serveur arrivent ici.\n"
+                "Tu y trouves l'auteur (avec son ID), le salon, un lien direct, le contenu "
+                "complet, les pièces jointes et l'avant/après en cas de modification."
+            ),
+        },
+    },
+    "members": {
+        "en": {
+            "title": "# 👥 Members",
+            "body": (
+                "**Joins, leaves, nicknames, avatars, statuses and invites.**\n"
+                "New accounts are flagged, and each invite tells you who created it "
+                "and how many times it was used."
+            ),
+        },
+        "fr": {
+            "title": "# 👥 Membres",
+            "body": (
+                "**Arrivées, départs, pseudos, avatars, statuts et invitations.**\n"
+                "Les comptes récents sont signalés, et chaque invitation indique qui "
+                "l'a créée et combien de fois elle a servi."
+            ),
+        },
+    },
+    "moderation": {
+        "en": {
+            "title": "# 🔨 Moderation",
+            "body": (
+                "**Bans, kicks, timeouts, warnings and anti-spam actions.**\n"
+                "Every entry shows the target, the moderator, the reason and the duration."
+            ),
+        },
+        "fr": {
+            "title": "# 🔨 Modération",
+            "body": (
+                "**Bans, kicks, exclusions temporaires, avertissements et anti-spam.**\n"
+                "Chaque entrée indique la cible, le modérateur, la raison et la durée."
+            ),
+        },
+    },
+    "server": {
+        "en": {
+            "title": "# ⚙️ Server",
+            "body": (
+                "**Channels, roles, emojis, stickers, threads, voice activity and "
+                "scheduled events.** Creation, deletion and every change."
+            ),
+        },
+        "fr": {
+            "title": "# ⚙️ Serveur",
+            "body": (
+                "**Salons, rôles, émojis, stickers, fils, activité vocale et événements "
+                "programmés.** Créations, suppressions et moindres modifications."
+            ),
+        },
+    },
+    "commands": {
+        "en": {
+            "title": "# ⌨️ Commands",
+            "body": (
+                "**Slash commands used** (who, where, when) and their errors.\n"
+                "Handy to spot a member abusing a command or a broken feature."
+            ),
+        },
+        "fr": {
+            "title": "# ⌨️ Commandes",
+            "body": (
+                "**Slash-commands utilisées** (qui, où, quand) et leurs erreurs.\n"
+                "Pratique pour repérer un abus ou une commande cassée."
+            ),
+        },
+    },
+    "audit": {
+        "en": {
+            "title": "# 🕵️ Audit log",
+            "body": (
+                "**Discord's own audit log**, translated: who did what, to whom, and why.\n"
+                "Complements the other channels when an action happened outside the bot."
+            ),
+        },
+        "fr": {
+            "title": "# 🕵️ Audit",
+            "body": (
+                "**Le journal d'audit de Discord**, traduit : qui a fait quoi, à qui, et pourquoi.\n"
+                "Complète les autres salons quand une action vient d'ailleurs que du bot."
+            ),
+        },
+    },
+    "bot": {
+        "en": {
+            "title": "# 🤖 Bot & stats",
+            "body": (
+                "**Startups, errors and periodic activity reports.**\n"
+                "-# Use `/logstats` for the dashboard, `/logtoggle` to mute a type, "
+                "`/logs-setup` to rebuild everything."
+            ),
+        },
+        "fr": {
+            "title": "# 🤖 Bot & stats",
+            "body": (
+                "**Démarrages, erreurs et rapports d'activité périodiques.**\n"
+                "-# Utilise `/logstats` pour le tableau de bord, `/logtoggle` pour couper "
+                "un type de log, `/logs-setup` pour tout réinstaller."
+            ),
+        },
+    },
+}
+
+LOG_LANG_BUTTON_ID = "log_guide_lang"
+DEFAULT_LANG = "en"
+LANGS = ("en", "fr")
 
 # Compteurs jour par jour conservés (jours).
 _HISTORY_DAYS = 30
@@ -61,7 +207,7 @@ _chan_cache: dict[tuple[int, str], int] = {}
 _log_ids_cache: dict[int, set[int]] = {}
 
 # ── Protections anti-boucle / anti-spam ─────────────────────────────────────
-# 1) Pause : pendant /logssetup (création/édition des 18 salons) on ne loggue
+# 1) Pause : pendant /logs-setup (création/édition des salons) on ne loggue
 #    pas les événements de salons, sinon on génère des dizaines de messages.
 _pause_depth = 0
 # 2) Débit : au-delà de _RATE_MAX envois en _RATE_WINDOW secondes sur un même
@@ -256,7 +402,7 @@ def save_channel_map(mapping: dict[str, int]) -> None:
 def log_channel_ids(guild_id: int | None = None) -> set[int]:
     """IDs de tous les canaux de logs (pour ne **jamais** les logger).
 
-    Inclut : la catégorie, les 18 salons mémorisés, le salon hub (mode de
+    Inclut : la catégorie, les salons mémorisés, le salon hub (mode de
     secours) et les threads de secours créés par le hub. Sans les threads, le
     bot reloggait ses propres logs et bouclait à l'infini.
     """
@@ -454,7 +600,7 @@ async def ensure_channels(
     recreate: bool = False,
     category_name: str = CATEGORY_NAME,
 ) -> tuple[dict[str, int], list[str], list[str]]:
-    """Crée (ou retrouve) la catégorie + les 18 salons de logs.
+    """Crée (ou retrouve) la catégorie + les 7 salons de logs.
 
     Retourne ``(mapping, créés, réutilisés)``.
     """
@@ -467,7 +613,7 @@ async def ensure_channels(
     if category is None:
         category = await guild.create_category(
             name=category_name, overwrites=_overwrites(guild),
-            reason="Installation des logs (/logssetup)",
+            reason="Installation des logs (/logs-setup)",
         )
         created.append(f"📁 **{category_name}** (catégorie)")
     else:
@@ -484,6 +630,16 @@ async def ensure_channels(
 
     mapping = channel_map()
 
+    keep_names = {name for name, _topic, _c in LOG_CHANNELS.values()}
+
+    # Anciens salons (18 → 7) : ils portent encore des noms de l'ancienne
+    # organisation. Par défaut on les **laisse** (l'historique compte) mais on
+    # les signale ; ``recreate`` les supprime.
+    legacy: list[discord.abc.GuildChannel] = [
+        ch for ch in category.text_channels
+        if ch.name in LEGACY_CHANNEL_NAMES and ch.name not in keep_names
+    ]
+
     if recreate:
         # Recréation propre : on supprime les salons de logs existants (par ID
         # mémorisé **et** par nom dans la catégorie) avant de tout reconstruire.
@@ -492,18 +648,21 @@ async def ensure_channels(
             ch = guild.get_channel(int(cid)) if cid else None
             if ch is not None:
                 doomed.append(ch)
-        names = {name for name, _topic, _c in LOG_CHANNELS.values()}
+        for ch in legacy:
+            if ch not in doomed:
+                doomed.append(ch)
         for ch in category.text_channels:
-            if ch.name in names and ch not in doomed:
+            if ch.name in keep_names and ch not in doomed:
                 doomed.append(ch)
         for ch in doomed:
             try:
-                await ch.delete(reason="Recréation des salons de logs (/logssetup recreer:True)")
+                await ch.delete(reason="Recréation des salons de logs (/logs-setup recréer:True)")
             except discord.HTTPException as e:
                 logger.warning("delete log channel %s: %s", ch.id, e)
         mapping = {}
         save_channel_map({})
         created.append(f"♻️ **{len(doomed)}** ancien(s) salon(s) supprimé(s)")
+        legacy = []
 
     for key, (name, topic, _colour) in LOG_CHANNELS.items():
         channel = guild.get_channel(mapping.get(key, 0)) if mapping.get(key) else None
@@ -514,7 +673,7 @@ async def ensure_channels(
                 channel = await guild.create_text_channel(
                     name=name, category=category, topic=topic[:1024],
                     overwrites=_overwrites(guild),
-                    reason="Installation des logs (/logssetup)",
+                    reason="Installation des logs (/logs-setup)",
                 )
                 created.append(channel.mention)
             except discord.HTTPException as e:
@@ -530,9 +689,198 @@ async def ensure_channels(
         mapping[key] = channel.id
 
     save_channel_map(mapping)
+    if legacy:
+        reused.append(
+            "⚠️ anciens salons encore là (historique conservé) : "
+            + ", ".join(ch.mention for ch in legacy[:10])
+            + (" …" if len(legacy) > 10 else "")
+        )
     logger.info("Logs: %d salon(s) créé(s), %d réutilisé(s) (%s).",
              len(created), len(reused), guild.name)
     return mapping, created, reused
+
+
+# ── Messages-guides + bouton de langue ───────────────────────────────────────
+
+def _guides() -> dict:
+    cfg = db.config().get("log_guides")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def guide_lang(channel_id: int) -> str:
+    """Langue du message-guide d'un salon (``en`` par défaut)."""
+    langs = db.config().get("log_guide_lang")
+    if isinstance(langs, dict):
+        value = langs.get(str(channel_id))
+        if value in LANGS:
+            return str(value)
+    return DEFAULT_LANG
+
+
+def set_guide_lang(channel_id: int, lang: str) -> None:
+    cfg = db.config()
+    langs = cfg.setdefault("log_guide_lang", {})
+    if not isinstance(langs, dict):
+        langs = {}
+        cfg["log_guide_lang"] = langs
+    langs[str(channel_id)] = lang if lang in LANGS else DEFAULT_LANG
+    db.save_config(cfg)
+
+
+def guide_key_for_channel(channel_id: int) -> str | None:
+    """Retrouve le type de log d'un salon à partir de son ID."""
+    for key, cid in channel_map().items():
+        if int(cid) == int(channel_id):
+            return key
+    return None
+
+
+def build_guide_components(key: str, lang: str) -> list[dict]:
+    """Payload (components v2) du message-guide d'un salon de logs."""
+    info = LOG_CHANNELS.get(key)
+    if info is None:
+        return []
+    name, _topic, accent = info
+    lang = lang if lang in LANGS else DEFAULT_LANG
+    guide = LOG_GUIDES.get(key, {}).get(lang) or {"title": f"# {name}", "body": ""}
+    switch_label = "🇫🇷 Français" if lang == "en" else "🇬🇧 English"
+    footer = (
+        "-# 🔒 Read-only channel — the bot writes, nobody else can."
+        if lang == "en"
+        else "-# 🔒 Salon en lecture seule — seul le bot écrit ici."
+    )
+    return [
+        {
+            "type": 17,
+            "accent_color": accent,
+            "components": [
+                {"type": 10, "content": guide["title"][:3900]},
+                {"type": 10, "content": guide["body"][:3900]},
+                {"type": 14, "divider": True, "spacing": 1},
+                {"type": 10, "content": footer[:3900]},
+                {
+                    "type": 1,
+                    "components": [
+                        {
+                            "type": 2,
+                            "style": 2,
+                            "label": switch_label[:80],
+                            "custom_id": LOG_LANG_BUTTON_ID,
+                        }
+                    ],
+                },
+            ],
+        }
+    ]
+
+
+def _guide_payload(key: str, lang: str) -> dict:
+    return {"flags": 32768, "components": build_guide_components(key, lang)}
+
+
+async def post_guides(guild: discord.Guild | None = None, *, force: bool = False) -> dict:
+    """Poste (ou met à jour) le message-guide en haut de chaque salon de logs.
+
+    L'ID du message est mémorisé : un nouvel appel édite le guide existant au
+    lieu d'en empiler un second. Retourne ``{clé: "posté"|"édité"|"échec"}``.
+    """
+    result: dict[str, str] = {}
+    cfg = db.config()
+    guides = _guides()
+    mapping = channel_map()
+
+    for key, cid in mapping.items():
+        channel_id = int(cid)
+        lang = guide_lang(channel_id)
+        payload = _guide_payload(key, lang)
+        if not payload["components"]:
+            continue
+        previous = guides.get(str(channel_id)) if not force else None
+        status, data = (0, {})
+        if previous:
+            status, data = await api_edit(channel_id, int(previous), payload)
+            if status in (200, 201):
+                result[key] = "édité"
+                continue
+        status, data = await api_send(channel_id, payload)
+        if status in (200, 201) and isinstance(data, dict) and data.get("id"):
+            guides[str(channel_id)] = int(data["id"])
+            result[key] = "posté"
+        else:
+            result[key] = "échec"
+            logger.warning("Guide du salon %s non posté (%s %s)", key, status, data)
+
+    cfg["log_guides"] = guides
+    db.save_config(cfg)
+    return result
+
+
+def migrate_settings() -> int:
+    """Reporte les anciens réglages (18 → 7 salons) sur la nouvelle organisation.
+
+    Retourne le nombre de réglages migrés. Sans ça, un ``/logtoggle`` fait
+    avant la refonte serait perdu.
+    """
+    cfg = db.config()
+    changed = 0
+
+    toggles = cfg.get("log_toggles")
+    if isinstance(toggles, dict):
+        for guild_id, values in toggles.items():
+            if not isinstance(values, dict):
+                continue
+            for old, new in LOG_KEY_MIGRATION.items():
+                if old in values:
+                    values[new] = bool(values[old]) and bool(values.get(new, True))
+                    del values[old]
+                    changed += 1
+
+    mapping = channel_map()
+    for old, new in LOG_KEY_MIGRATION.items():
+        if old in mapping:
+            mapping.pop(old, None)
+            changed += 1
+    if mapping:
+        save_channel_map(mapping)
+    db.save_config(cfg)
+    return changed
+
+
+class LogGuideLangView(discord.ui.View):
+    """Bouton EN/FR des messages-guides des salons de logs.
+
+    Comme pour les tickets : une seule vue persistante (``custom_id`` fixe),
+    l'état (« ce salon est en français ») est stocké en base. Le clic traduit
+    **tout** le message-guide pour tout le monde et le bouton bascule.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Français",
+        emoji="🇫🇷",
+        style=discord.ButtonStyle.secondary,
+        custom_id=LOG_LANG_BUTTON_ID,
+    )
+    async def switch_lang(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel_id = int(interaction.channel_id or 0)
+        key = guide_key_for_channel(channel_id)
+        await interaction.response.defer()
+        if key is None:
+            logger.warning("Bouton de langue des logs utilisé hors salon de logs (%s)", channel_id)
+            return
+
+        current = guide_lang(channel_id)
+        target = "fr" if current == "en" else "en"
+        set_guide_lang(channel_id, target)
+
+        payload = _guide_payload(key, target)
+        message_id = getattr(interaction.message, "id", None)
+        if message_id:
+            status, data = await api_edit(channel_id, int(message_id), payload)
+            if status not in (200, 201):
+                logger.error("Guide logs lang: %s %s", status, data)
 
 
 async def _get_thread_fallback(guild: discord.Guild, key: str) -> discord.Thread | None:
