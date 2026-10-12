@@ -120,7 +120,7 @@ class Info(commands.Cog):
             "components": [
                 {
                     "type": 17,
-                    "accent_color": 0xA8D8EA,
+                    "accent_color": ui.ACCENT_LEVEL_UP,
                     "components": [
                         {
                             "type": 9,
@@ -215,7 +215,7 @@ class Info(commands.Cog):
             "components": [
                 {
                     "type": 17,
-                    "accent_color": 0xA8D8EA,
+                    "accent_color": ui.ACCENT_LEVEL_UP,
                     "components": [
                         {"type": 10, "content": f"## {target.display_name}'s Avatar"},
                         {"type": 14, "divider": True, "spacing": 1},
@@ -441,7 +441,7 @@ class Info(commands.Cog):
                 "components": [
                     {
                         "type": 17,
-                        "accent_color": 0xA8D8EA,
+                        "accent_color": ui.ACCENT_LEVEL_UP,
                         "components": [
                             {
                                 "type": 10,

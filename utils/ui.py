@@ -32,9 +32,22 @@ ACCENT_ERROR   = 0xED4245   # rouge — erreur / refus
 ACCENT_INFO    = 0x9B8EC4   # violet doux — information, aide
 ACCENT_FUN     = 0xF1C40F   # doré — fun, jeux, giveaways
 ACCENT_LEVEL   = 0xF7CAC9   # rose corail — niveaux, XP, profils
+ACCENT_MOD_WARN = 0xFFCC00  # ambre — avertissements de modération
+ACCENT_LEVEL_UP = 0xA8D8EA  # bleu ciel — montée de niveau
+ACCENT_LEVEL_ROLE = 0xC3B1E1  # violet doux — palier de niveau débloqué
+ACCENT_MAX     = 0xFFD700   # or — niveau maximum atteint
 ACCENT_MOD     = 0xED4245   # rouge — modération
 ACCENT_LOG     = 0x2C3E50   # bleu nuit — logs / audit
 ACCENT_INVITE  = 0x1ABC9C   # turquoise — invitations, parrainage
+
+# — Une couleur par type de ticket (voir cogs/tickets/constants.py) —
+TICKET_ACCENTS = {
+    "commission":  0x1E90FF,
+    "recruitment": 0x9B59B6,
+    "bug":         0xED4245,
+    "partnership": 0x57F287,
+    "question":    0xF7CAC9,
+}
 
 MAX_TEXT = 4000             # limite Discord d'un bloc de texte (TextDisplay)
 MAX_CONTENT = 4000          # limite globale d'un message components v2

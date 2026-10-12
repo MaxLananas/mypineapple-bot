@@ -199,7 +199,7 @@ class Leveling(commands.Cog):
             "components": [
                 {
                     "type": 17,
-                    "accent_color": 0xC3B1E1,
+                    "accent_color": ui.ACCENT_LEVEL_ROLE,
                     "components": [
                         {"type": 10, "content": "## 🏆 Level Rewards\nAll milestones (5 → 100)."},
                         {"type": 14, "divider": True, "spacing": 1},

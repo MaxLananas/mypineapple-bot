@@ -4,6 +4,7 @@ import discord
 
 import utils.db as db
 from utils.emojis import E
+from utils import ui
 from config import LOGO_URL, SUPPORT_ROLE_ID
 
 
@@ -31,7 +32,7 @@ TICKET_TYPES = {
         "label":  "Commission",
         "emoji":  "🎨",
         "style":  1,
-        "accent": 0x1E90FF,
+        "accent": ui.TICKET_ACCENTS["commission"],
         "prefix": "commission",
         # Texte bilingue : le salon s'ouvre en anglais, le bouton du salon
         # bascule header + guide + méta en français (et inversement).
@@ -61,7 +62,7 @@ TICKET_TYPES = {
         "label":  "Recruitment",
         "emoji":  "🏗️",
         "style":  2,
-        "accent": 0x9B59B6,
+        "accent": ui.TICKET_ACCENTS["recruitment"],
         "prefix": "recruit",
         "header": {
             "en": "# 🌊 MyPineapple Builders\n## BUILDER RECRUITMENT",
@@ -91,7 +92,7 @@ TICKET_TYPES = {
         "label":  "Bug Report",
         "emoji":  "🐛",
         "style":  2,
-        "accent": 0xED4245,
+        "accent": ui.TICKET_ACCENTS["bug"],
         "prefix": "bug",
         "header": {
             "en": "# 🌊 MyPineapple Bug Reports\n## BUG REPORT",
@@ -121,7 +122,7 @@ TICKET_TYPES = {
         "label":  "Partnership",
         "emoji":  "🤝",
         "style":  2,
-        "accent": 0x57F287,
+        "accent": ui.TICKET_ACCENTS["partnership"],
         "prefix": "partner",
         "header": {
             "en": "# 🌊 MyPineapple Partnerships\n## PARTNERSHIP REQUEST",
@@ -151,7 +152,7 @@ TICKET_TYPES = {
         "label":  "Question",
         "emoji":  "❓",
         "style":  2,
-        "accent": 0xF7CAC9,
+        "accent": ui.TICKET_ACCENTS["question"],
         "prefix": "question",
         "header": {
             "en": "# 🌊 MyPineapple Support\n## GENERAL QUESTION",

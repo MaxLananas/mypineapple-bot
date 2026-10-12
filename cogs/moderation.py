@@ -405,7 +405,7 @@ class Moderation(commands.Cog):
             "components": [
                 {
                     "type": 17,
-                    "accent_color": 0xFFCC00,
+                    "accent_color": ui.ACCENT_MOD_WARN,
                     "components": [
                         {
                             "type": 9,
@@ -480,7 +480,7 @@ class Moderation(commands.Cog):
             "components": [
                 {
                     "type": 17,
-                    "accent_color": 0xFFCC00,
+                    "accent_color": ui.ACCENT_MOD_WARN,
                     "components": [
                         {
                             "type": 9,

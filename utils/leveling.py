@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import discord
 
 import utils.db as db
+from utils import ui
 from utils.api import api_send
 from utils.helpers import (
     xp_for_level,
@@ -172,7 +173,11 @@ async def send_level_up_message(
 
     next_ml = next((l for l in sorted(roles) if l > level), None)
     next_text = f"Next milestone at level **{next_ml}**" if next_ml else "Maximum level reached!"
-    accent = 0xFFD700 if is_max else (0xC3B1E1 if level in roles else 0xA8D8EA)
+    # Accents du design system (utils/ui.py) : or pour le niveau max, violet
+    # quand un rôle est débloqué, bleu ciel sinon.
+    accent = (ui.ACCENT_MAX if is_max
+              else ui.ACCENT_LEVEL_ROLE if level in roles
+              else ui.ACCENT_LEVEL_UP)
     title = "🏆 Maximum level reached!" if is_max else f"⬆️ Level {level}"
 
     progress_line = (

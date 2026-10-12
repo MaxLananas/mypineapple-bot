@@ -488,7 +488,7 @@ class Profile(commands.Cog):
             "components": [
                 {
                     "type": 17,
-                    "accent_color": 0xC3B1E1,
+                    "accent_color": ui.ACCENT_LEVEL_ROLE,
                     "components": [
                         {
                             "type": 9,
@@ -815,7 +815,7 @@ class Profile(commands.Cog):
             "components": [
                 {
                     "type": 17,
-                    "accent_color": 0xA8D8EA,
+                    "accent_color": ui.ACCENT_LEVEL_UP,
                     "components": [
                         {
                             "type": 9,
