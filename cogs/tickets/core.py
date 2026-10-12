@@ -419,6 +419,7 @@ class Tickets(commands.Cog):
                             "type": 10,
                             "content": (
                                 "🎨 **Commission** — Want a custom build, plugin or mod?\n"
+                                "🏗️ **Recruitment** — Want to join our build team? Apply here.\n"
                                 "🐛 **Bug Report** — Found something broken? Let us know.\n"
                                 "🤝 **Partnership** — Want to collaborate with us?\n"
                                 "❓ **Question** — Any other question? We're here."
@@ -434,6 +435,13 @@ class Tickets(commands.Cog):
                                     "label": "Commission",
                                     "emoji": {"name": "🎨"},
                                     "custom_id": "ticket_commission",
+                                },
+                                {
+                                    "type": 2,
+                                    "style": 2,
+                                    "label": "Recruitment",
+                                    "emoji": {"name": "🏗️"},
+                                    "custom_id": "ticket_recruitment",
                                 },
                                 {
                                     "type": 2,

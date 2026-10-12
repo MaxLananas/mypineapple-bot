@@ -36,6 +36,15 @@ TICKET_TYPES = {
         "header": "# 🌊 MyPineapple Commissions\n## COMMISSION REQUEST\n_Please provide as much detail as possible._",
         "color":  discord.ButtonStyle.primary,
     },
+    "recruitment": {
+        "label":  "Recruitment",
+        "emoji":  "🏗️",
+        "style":  2,
+        "accent": 0x9B59B6,
+        "prefix": "recruit",
+        "header": "# 🌊 MyPineapple Builders\n## BUILDER RECRUITMENT\n_Show us what you can build — portfolio links help a lot._",
+        "color":  discord.ButtonStyle.secondary,
+    },
     "bug": {
         "label":  "Bug Report",
         "emoji":  "🐛",

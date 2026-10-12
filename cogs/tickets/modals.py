@@ -207,8 +207,62 @@ class QuestionModal(discord.ui.Modal, title="General Question"):
         await _notify_error(interaction, "QuestionModal", error)
 
 
+class RecruitmentModal(discord.ui.Modal, title="Builder Recruitment"):
+    pseudo = discord.ui.TextInput(
+        label="Minecraft username / pseudo",
+        style=discord.TextStyle.short,
+        placeholder="e.g. MaxLananas",
+        max_length=100,
+    )
+    age_country = discord.ui.TextInput(
+        label="Age & country / timezone",
+        style=discord.TextStyle.short,
+        placeholder="e.g. 18 — France (UTC+1)",
+        max_length=100,
+    )
+    experience = discord.ui.TextInput(
+        label="Building experience",
+        style=discord.TextStyle.paragraph,
+        placeholder=(
+            "How long have you been building?\n"
+            "Which servers, projects or teams?\n"
+            "Which styles (medieval, modern, terraforming…)?"
+        ),
+        max_length=1000,
+    )
+    portfolio = discord.ui.TextInput(
+        label="Portfolio / screenshot links",
+        style=discord.TextStyle.paragraph,
+        placeholder="Imgur, Planet Minecraft, Instagram, YouTube, Google Drive…",
+        max_length=500,
+    )
+    availability = discord.ui.TextInput(
+        label="Availability & motivation",
+        style=discord.TextStyle.paragraph,
+        placeholder="Hours per week, when you can build, and why you want to join.",
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from .core import _create_ticket  # local import to avoid circularity
+        await interaction.response.defer(ephemeral=True)
+        body = (
+            f"**Minecraft username**\n{self.pseudo.value}\n\n"
+            f"**Age & country / timezone**\n{self.age_country.value}\n\n"
+            f"**Building experience**\n{self.experience.value}\n\n"
+            f"**Portfolio / screenshots**\n{self.portfolio.value}\n\n"
+            f"**Availability & motivation**\n{self.availability.value}"
+        )
+        ch = await _create_ticket(interaction, "recruitment", body, None)
+        await interaction.followup.send(f"Ticket created: {ch.mention}", ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        await _notify_error(interaction, "RecruitmentModal", error)
+
+
 _MODAL_MAP = {
     "ticket_commission":  CommissionModal,
+    "ticket_recruitment": RecruitmentModal,
     "ticket_bug":         BugModal,
     "ticket_partnership": PartnershipModal,
     "ticket_question":    QuestionModal,
@@ -216,6 +270,7 @@ _MODAL_MAP = {
 
 _KIND_MAP = {
     "ticket_commission":  "commission",
+    "ticket_recruitment": "recruitment",
     "ticket_bug":         "bug",
     "ticket_partnership": "partnership",
     "ticket_question":    "question",
