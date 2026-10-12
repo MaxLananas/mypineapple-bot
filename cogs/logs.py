@@ -51,6 +51,61 @@ from config import LOG_ACCESS_ROLE_ID, SUPPORT_ROLE_ID
 log = logging.getLogger(__name__)
 
 # ── Caches ───────────────────────────────────────────────────────────────────
+# Actions d'audit les plus fréquentes, en clair (le nom technique reste affiché
+# entre parenthèses pour ne rien perdre). On passe par les noms textuels et on
+# ignore ceux que la version installée de discord.py ne connaît pas : la table
+# ne peut donc jamais empêcher le bot de démarrer.
+_AUDIT_LABEL_NAMES: dict[str, str] = {
+    "ban": "Bannissement",
+    "unban": "Débannissement",
+    "kick": "Expulsion",
+    "member_update": "Membre modifié",
+    "member_role_update": "Rôles du membre modifiés",
+    "member_disconnect": "Membre déconnecté du vocal",
+    "member_move": "Membre déplacé en vocal",
+    "member_prune": "Membres inactifs expulsés",
+    "message_delete": "Message supprimé",
+    "message_bulk_delete": "Messages supprimés en masse",
+    "message_pin": "Message épinglé",
+    "message_unpin": "Message désépinglé",
+    "channel_create": "Salon créé",
+    "channel_delete": "Salon supprimé",
+    "channel_update": "Salon modifié",
+    "role_create": "Rôle créé",
+    "role_delete": "Rôle supprimé",
+    "role_update": "Rôle modifié",
+    "invite_create": "Invitation créée",
+    "invite_delete": "Invitation supprimée",
+    "invite_update": "Invitation modifiée",
+    "thread_create": "Fil créé",
+    "thread_delete": "Fil supprimé",
+    "thread_update": "Fil modifié",
+    "emoji_create": "Émoji créé",
+    "emoji_delete": "Émoji supprimé",
+    "emoji_update": "Émoji modifié",
+    "webhook_create": "Webhook créé",
+    "webhook_delete": "Webhook supprimé",
+    "webhook_update": "Webhook modifié",
+    "automod_rule_create": "Règle d'auto-modération créée",
+    "automod_rule_update": "Règle d'auto-modération modifiée",
+    "automod_rule_delete": "Règle d'auto-modération supprimée",
+    "automod_block_message": "Message bloqué par l'auto-modération",
+    "guild_update": "Serveur modifié",
+    "integration_create": "Intégration ajoutée",
+    "integration_delete": "Intégration retirée",
+    "integration_update": "Intégration modifiée",
+    "stage_instance_create": "Salon événement créé",
+    "scheduled_event_create": "Événement créé",
+    "scheduled_event_delete": "Événement supprimé",
+    "scheduled_event_update": "Événement modifié",
+}
+
+AUDIT_LABELS: dict[discord.AuditLogAction, str] = {
+    getattr(discord.AuditLogAction, name): label
+    for name, label in _AUDIT_LABEL_NAMES.items()
+    if hasattr(discord.AuditLogAction, name)
+}
+
 _snipe_cache:     dict[int, dict] = {}
 _editsnipe_cache: dict[int, dict] = {}
 # (guild_id, user_id) -> timestamp d'arrivée en vocal
@@ -1013,10 +1068,21 @@ class Logs(commands.Cog):
             except Exception:
                 pass
 
+        # Détails supplémentaires quand Discord les fournit (nombre de
+        # messages supprimés, salon concerné, règle d'auto-modération…).
+        extra = getattr(entry, "extra", None)
+        for attr in ("count", "members_removed", "delete_member_days", "channel",
+                     "message_id", "inviter", "role", "auto_moderation_rule_trigger_type"):
+            value = getattr(extra, attr, None) if extra is not None else None
+            if value is not None:
+                changes.append(f"**{attr}** `{value}`")
+
         await loghub.log(
             guild, "audit",
             "## 🕵️ Entrée d'audit\n"
-            f"**Action** `{entry.action.name}`\n"
+            f"**Action** `{AUDIT_LABELS.get(entry.action, entry.action.name)}` "
+            f"(`{entry.action.name}`)\n"
+            f"**Entrée** `{entry.id}`\n"
             f"**Par** {entry.user.mention if entry.user else '?'} "
             f"(`{getattr(entry.user, 'id', '?')}`)\n"
             f"**Cible** {target or '—'}\n"

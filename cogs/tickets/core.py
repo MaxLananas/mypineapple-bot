@@ -21,6 +21,7 @@ from config import (
 
 from . import state
 from .constants import (
+    TICKET_PANEL_LINES,
     DEFAULT_LANG, LANGS, TICKET_BUTTONS, TICKET_CLOSE_REASONS, TICKET_TYPES,
     _build_overwrites, _is_valid_url, _next_ticket_number, build_ticket_intro,
 )
@@ -449,88 +450,41 @@ class Tickets(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def ticket_panel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        status, resp = await api_send(interaction.channel.id, {
-            "flags": 32768,
-            "components": [
-                {
-                    "type": 17,
-                    "accent_color": 0x1E90FF,
-                    "components": [
-                        {
-                            "type": 9,
-                            "components": [
-                                {
-                                    "type": 10,
-                                    "content": (
-                                        "# 🌊 MyPineapple Support\n"
-                                        "Choose a category below to open a ticket.\n"
-                                        "Our team will get back to you as soon as possible."
-                                    ),
-                                }
-                            ],
-                            "accessory": {"type": 11, "media": {"url": LOGO_URL}},
-                        },
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 10,
-                            "content": (
-                                "🎨 **Commission** — Want a custom build, plugin or mod?\n"
-                                "🏗️ **Recruitment** — Want to join our build team? Apply here.\n"
-                                "🐛 **Bug Report** — Found something broken? Let us know.\n"
-                                "🤝 **Partnership** — Want to collaborate with us?\n"
-                                "❓ **Question** — Any other question? We're here."
-                            ),
-                        },
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 1,
-                            "components": [
-                                {
-                                    "type": 2,
-                                    "style": 1,
-                                    "label": "Commission",
-                                    "emoji": {"name": "🎨"},
-                                    "custom_id": "ticket_commission",
-                                },
-                                {
-                                    "type": 2,
-                                    "style": 2,
-                                    "label": "Recruitment",
-                                    "emoji": {"name": "🏗️"},
-                                    "custom_id": "ticket_recruitment",
-                                },
-                                {
-                                    "type": 2,
-                                    "style": 2,
-                                    "label": "Bug Report",
-                                    "emoji": {"name": "🐛"},
-                                    "custom_id": "ticket_bug",
-                                },
-                                {
-                                    "type": 2,
-                                    "style": 2,
-                                    "label": "Partnership",
-                                    "emoji": {"name": "🤝"},
-                                    "custom_id": "ticket_partnership",
-                                },
-                                {
-                                    "type": 2,
-                                    "style": 2,
-                                    "label": "Question",
-                                    "emoji": {"name": "❓"},
-                                    "custom_id": "ticket_question",
-                                },
-                            ],
-                        },
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 10,
-                            "content": "-# Click a category: the ticket opens right away and the bot tells you what to include. 🍍",
-                        },
-                    ],
-                }
-            ],
-        })
+        # Panel en carte du design system : comment ça marche, les catégories,
+        # puis les boutons. Le guide de chaque salon est bilingue (bouton FR).
+        panel = ui.Card("", accent=ui.ACCENT_BRAND, thumbnail=LOGO_URL)
+        panel.header(
+            "# 🌊 MyPineapple Support\n"
+            "Pick a category below — a **private channel** opens right away, "
+            "with a step-by-step guide inside."
+        )
+        panel.divider()
+        panel.text("**How it works**\n"
+                   "`1` Click a category button below\n"
+                   "`2` A private channel opens with you and the team\n"
+                   "`3` The guide tells you exactly what to include")
+        panel.divider(spacing=1)
+        panel.text("**Categories**\n" + "\n".join(
+            f"{info['emoji']} **{info['label']}** — {TICKET_PANEL_LINES.get(kind, '')}"
+            for kind, info in TICKET_TYPES.items()
+        ))
+        panel.divider()
+        buttons = []
+        for custom_id, kind in TICKET_BUTTONS.items():
+            info = TICKET_TYPES[kind]
+            buttons.append(discord.ui.Button(
+                label=info["label"], emoji=info["emoji"],
+                style=discord.ButtonStyle.primary if info.get("style") == 1
+                else discord.ButtonStyle.secondary,
+                custom_id=custom_id,
+            ))
+        for i in range(0, len(buttons), 5):
+            panel.row(*buttons[i:i + 5])
+        panel.divider(spacing=1).footer(
+            "Kicked off by MyPineapple · answers in the ticket, not here 🍍"
+        )
+
+        status, resp = await api_send(interaction.channel.id, panel.payload())
         if status in (200, 201):
             await ui.send(interaction, ui.ok_card(
                 "Ticket panel posted",

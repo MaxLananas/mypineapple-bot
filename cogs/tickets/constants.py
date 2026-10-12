@@ -198,6 +198,15 @@ TICKET_UI = {
 }
 
 # custom_id du panel -> type de ticket (le clic ouvre directement le salon)
+# Une ligne par catégorie, affichée dans le panel /ticket-panel.
+TICKET_PANEL_LINES = {
+    "commission":  "Custom build, plugin, mod or texture pack? Order it here.",
+    "recruitment": "Join the MyPineapple build team — show us your work.",
+    "bug":         "Something broken on the server? Report it with details.",
+    "partnership": "Collab, showcase or event? Let's talk about it.",
+    "question":    "Anything else — we read every ticket.",
+}
+
 TICKET_BUTTONS = {f"ticket_{kind}": kind for kind in TICKET_TYPES}
 
 

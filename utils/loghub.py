@@ -46,7 +46,7 @@ LOG_CHANNELS: dict[str, tuple[str, str, int]] = {
     "bot":        ("🤖・bot",          "Démarrages, erreurs, statistiques",                 0x7289DA),
 }
 
-# Ancienne organisation (18 salons) -> nouvelle (7) : sert à migrer les
+# Ancienne organisation (18 salons) → nouvelle (7) : sert à migrer les
 # réglages /logtoggle et à retrouver les anciens salons à supprimer.
 LOG_KEY_MIGRATION: dict[str, str] = {
     "edits":      "messages",
