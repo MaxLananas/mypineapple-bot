@@ -12,6 +12,70 @@ from .constants import _is_valid_url
 
 log = logging.getLogger(__name__)
 
+# ── Limites imposées par l'API Discord ───────────────────────────────────────
+# Les dépasser renvoie « 400 Invalid Form Body (50035) » : le modal ne s'ouvre
+# JAMAIS et l'utilisateur voit « Interaction failed » (bug vécu sur le bouton
+# Recruitment : un placeholder de 114 caractères > 100). On tronque donc
+# systématiquement à l'envoi — un texte un peu long ne doit pas casser un bouton.
+MODAL_TITLE_MAX   = 45
+TEXT_LABEL_MAX    = 45
+TEXT_PLACEHOLDER_MAX = 100
+TEXT_VALUE_MAX    = 4000
+TEXT_MIN_MAX      = 4000
+
+
+def _clip(text: str | None, limit: int) -> str | None:
+    """Tronque une chaîne à ``limit`` caractères (en gardant un « … » propre)."""
+    if text is None:
+        return None
+    text = str(text)
+    if not text or len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"
+
+
+def _field(child):
+    """Objet exposant ``label``/``placeholder``/``max_length`` du champ.
+
+    discord.py ≥ 2.6 encapsule chaque ``TextInput`` dans un ``_underlying``
+    (et déprécie ``TextInput.label``, en forçant le filtre d'avertissements :
+    impossible à masquer proprement). On passe donc par l'API interne quand
+    elle existe, sinon par l'ancienne — compatible 2.5 → 2.7, sans warning.
+    """
+    return getattr(child, "_underlying", child)
+
+
+def sanitize_modal(modal: discord.ui.Modal) -> discord.ui.Modal:
+    """Ramène un modal dans les limites Discord avant ``send_modal``.
+
+    Corrige : titre > 45, label > 45, placeholder > 100, max_length > 4000,
+    min_length > max_length. Une erreur ici étant invisible pour l'utilisateur
+    (le formulaire ne s'affiche simplement pas), elle est aussi journalisée.
+    """
+    title = _clip(modal.title, MODAL_TITLE_MAX)
+    if title:
+        modal.title = title
+
+    for child in list(getattr(modal, "children", []) or []):
+        field = _field(child)
+        label = _clip(getattr(field, "label", None), TEXT_LABEL_MAX)
+        if label:
+            field.label = label
+        placeholder = _clip(getattr(field, "placeholder", None), TEXT_PLACEHOLDER_MAX)
+        if placeholder is not None:
+            field.placeholder = placeholder
+        try:
+            field.max_length = min(
+                int(getattr(field, "max_length", TEXT_VALUE_MAX) or TEXT_VALUE_MAX),
+                TEXT_VALUE_MAX,
+            )
+            min_length = int(getattr(field, "min_length", 0) or 0)
+            if min_length > field.max_length:
+                field.min_length = field.max_length
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return modal
+
 
 async def _notify_error(interaction: discord.Interaction, label: str, error: Exception) -> None:
     """Prévient l'utilisateur qu'un ticket n'a pas pu être créé.
@@ -223,11 +287,7 @@ class RecruitmentModal(discord.ui.Modal, title="Builder Recruitment"):
     experience = discord.ui.TextInput(
         label="Building experience",
         style=discord.TextStyle.paragraph,
-        placeholder=(
-            "How long have you been building?\n"
-            "Which servers, projects or teams?\n"
-            "Which styles (medieval, modern, terraforming…)?"
-        ),
+        placeholder="Experience, servers/projects, styles (≤100 caractères)",
         max_length=1000,
     )
     portfolio = discord.ui.TextInput(
@@ -288,4 +348,21 @@ async def _gate_ticket(interaction: discord.Interaction, custom_id: str):
             )
             return
     modal_cls = _MODAL_MAP.get(custom_id, QuestionModal)
-    await interaction.response.send_modal(modal_cls())
+    modal = sanitize_modal(modal_cls())
+    try:
+        await interaction.response.send_modal(modal)
+    except discord.HTTPException as e:
+        # Un modal refusé par l'API (ex. 50035) ne doit pas rester sans réponse :
+        # l'utilisateur verrait juste « Interaction failed ».
+        log.error("send_modal(%s): %s", custom_id, e)
+        msg = (
+            "❌ I couldn't open the form (Discord refused it). "
+            "Please try again, or open a ❓ Question ticket."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass

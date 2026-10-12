@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 import discord
 
 import utils.db as db
-from utils.api import api_send, api_send_queued
+from utils.api import api_send, api_send_queued, queue_depth
 from config import LOG_HUB_CHANNEL_ID, LOG_ACCESS_ROLE_ID
 
 logger = logging.getLogger(__name__)
@@ -69,9 +69,9 @@ _pause_depth = 0
 #    futur événement créait une boucle, le bot ne peut pas spammer.
 _RATE_WINDOW = 10.0
 _RATE_MAX = 25
-_BREAKER_SECONDS = 300.0
+_BREAKER_SECONDS = 300.0      # durée du mode « rafale » (file d'attente, sans perte)
+_QUEUE_SOFT_LIMIT = 200       # au-delà, on considère la file comme saturée
 _rate: dict[int, list[float]] = {}
-_breaker_until: dict[int, float] = {}
 # 3) Doublons : un même contenu vers le même salon à moins de _DEDUP_SECONDS
 #    d'intervalle est ignoré (stoppe net une boucle log→message→log).
 _DEDUP_SECONDS = 3.0
@@ -128,40 +128,91 @@ def remember_fallback_thread(thread_id: int) -> None:
     _log_ids_cache.clear()
 
 
-def _allow_send(guild_id: int, key: str, content: str) -> bool:
-    """Filet anti-boucle : débit maximal + déduplication."""
-    now = time.monotonic()
-    if now < _breaker_until.get(guild_id, 0.0):
-        return False
+# Mode d'envoi décidé par _allow_send()
+SEND_NOW, SEND_QUEUE, SEND_DROP = "now", "queue", "drop"
+_burst_until: dict[int, float] = {}
+_dropped: dict[int, int] = {}
+_drop_report: dict[int, float] = {}
 
+
+def _allow_send(guild_id: int, key: str, content: str) -> str:
+    """Décide *comment* envoyer un log (au lieu de le jeter).
+
+    Ancien comportement : au-delà de 25 messages / 10 s, **tout** était
+    supprimé pendant 300 s (« protection anti-boucle ») — d'où des trous
+    énormes dans les logs lors d'un raid ou d'un flood.
+
+    Nouveau comportement, sans perte :
+      * débit normal → envoi immédiat (``SEND_NOW``) ;
+      * débit élevé → mise en file d'attente (``SEND_QUEUE``), le régulateur
+        par salon de ``utils.api`` étale les envois tout seul ;
+      * cas extrême (file saturée **et** débit anormal) → ``SEND_DROP``, mais
+        seulement là, avec un compte-rendu périodique au lieu d'un silence.
+    """
+    now = time.monotonic()
+
+    # Déduplication stricte : seule une vraie boucle (contenu identique répété
+    # à quelques secondes d'intervalle) est écartée.
     seen = _last_sent.get((guild_id, key, content))
     if seen is not None and now - seen < _DEDUP_SECONDS:
-        return False
+        return SEND_DROP
 
     window = [t for t in _rate.get(guild_id, []) if now - t < _RATE_WINDOW]
-    if len(window) >= _RATE_MAX:
-        # Coupure automatique : quelque chose boucle, on arrête tout 5 minutes.
-        _breaker_until[guild_id] = now + _BREAKER_SECONDS
-        _rate[guild_id] = []
-        logger.error(
-            "Logs: %d messages en moins de %.0f s sur le serveur %s — écriture "
-            "suspendue %.0f s (protection anti-boucle).",
-            len(window), _RATE_WINDOW, guild_id, _BREAKER_SECONDS,
-        )
-        return False
-
+    over = len(window) >= _RATE_MAX
     window.append(now)
     _rate[guild_id] = window
+
     _last_sent[(guild_id, key, content)] = now
     if len(_last_sent) > 5000:
         for k in sorted(_last_sent, key=_last_sent.get)[:2500]:
             _last_sent.pop(k, None)
-    return True
+
+    burst = now < _burst_until.get(guild_id, 0.0)
+    if not over and not burst:
+        return SEND_NOW
+
+    if over:
+        if not burst:
+            logger.warning(
+                "Logs: rafale détectée sur le serveur %s (%d événements / %.0f s) — "
+                "passage en file d'attente, aucun log n'est perdu.",
+                guild_id, len(window), _RATE_WINDOW,
+            )
+        _burst_until[guild_id] = now + _BREAKER_SECONDS
+
+    # Tant que la file d'attente respire, on met en attente (pacing API) :
+    # l'information reste complète, juste décalée de quelques secondes.
+    if queue_depth() < _QUEUE_SOFT_LIMIT:
+        return SEND_QUEUE
+
+    # File saturée : là seulement on abandonne, et on le dit (1 ligne / 30 s).
+    dropped = _dropped.get(guild_id, 0)
+    if dropped and now - _drop_report.get(guild_id, 0.0) > 30.0:
+        logger.error(
+            "Logs: %d événement(s) abandonné(s) sur le serveur %s (file d'envoi "
+            "saturée : plus de %d messages en attente).",
+            dropped, guild_id, _QUEUE_SOFT_LIMIT,
+        )
+        _dropped[guild_id] = 0
+        _drop_report[guild_id] = now
+    _dropped[guild_id] = dropped + 1
+    return SEND_DROP
+
+
+def note_dropped(guild_id: int, amount: int = 1) -> None:
+    """Comptabilise un log perdu (appelé quand la file d'envoi est saturée)."""
+    _dropped[guild_id] = _dropped.get(guild_id, 0) + amount
+
+
+def dropped_count(guild_id: int | None = None) -> int:
+    if guild_id is None:
+        return sum(_dropped.values())
+    return _dropped.get(guild_id, 0)
 
 
 def breaker_remaining(guild_id: int) -> float:
-    """Secondes restantes de coupure anti-boucle (0 si aucun)."""
-    return max(0.0, _breaker_until.get(guild_id, 0.0) - time.monotonic())
+    """Conservé pour compat : secondes restantes de mode « rafale » (0 si aucun)."""
+    return max(0.0, _burst_until.get(guild_id, 0.0) - time.monotonic())
 
 
 # ── Accès config ─────────────────────────────────────────────────────────────
@@ -596,7 +647,8 @@ async def log(
     try:
         if not is_enabled(guild.id, key):
             return
-        if not _allow_send(guild.id, key, content):
+        mode = _allow_send(guild.id, key, content)
+        if mode == SEND_DROP:
             return
         dest = await get_destination(guild, key)
         if dest is None:
@@ -609,7 +661,10 @@ async def log(
                 content, accent=accent, gallery=gallery, thumbnail=thumbnail
             ),
         }
-        if queued:
+        # En mode rafale on passe par la file : le régulateur par salon de
+        # utils.api étale les envois (≤ 4 / 5 s) sans rien perdre. Les envois
+        # « queued » d'origine gardent évidemment le même chemin.
+        if queued or mode == SEND_QUEUE:
             api_send_queued(dest.id, payload, allowed_mentions=mentions)
         else:
             await api_send(dest.id, payload, allowed_mentions=mentions)

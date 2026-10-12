@@ -387,7 +387,21 @@ class Tickets(commands.Cog):
             return
         cid = interaction.data.get("custom_id", "")
         if cid in _MODAL_MAP:
-            await _gate_ticket(interaction, cid)
+            try:
+                await _gate_ticket(interaction, cid)
+            except Exception as e:
+                # Dernier filet : une erreur ici produisait un
+                # « Unhandled event error in 'on_interaction' » et laissait
+                # l'utilisateur devant « Interaction failed » sans explication.
+                log.exception("ticket button %s: %s", cid, e)
+                msg = "❌ Something went wrong on my side. Please try again in a moment."
+                try:
+                    if interaction.response.is_done():
+                        await interaction.followup.send(msg, ephemeral=True)
+                    else:
+                        await interaction.response.send_message(msg, ephemeral=True)
+                except Exception:
+                    pass
 
     @app_commands.command(name="ticket-panel", description="Send the ticket panel.")
     @app_commands.checks.has_permissions(administrator=True)
