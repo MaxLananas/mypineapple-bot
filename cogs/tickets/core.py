@@ -26,7 +26,8 @@ from .constants import (
     _build_overwrites, _is_valid_url, _next_ticket_number, build_ticket_intro,
 )
 from .transcript import _history_to_logs, _transcript_html, _transcript_txt
-from .views import CloseTicketView, ReopenView, TicketLangView
+from .views import (CloseReasonSelectView, CloseTicketView, ReopenView,
+                    TicketLangView)
 
 log = logging.getLogger(__name__)
 
@@ -404,6 +405,7 @@ class Tickets(commands.Cog):
         self.bot = bot
         state.set_bot(bot)
         bot.add_view(CloseTicketView())
+        bot.add_view(CloseReasonSelectView())
         bot.add_view(TicketLangView())
         # Re-register reopen buttons for closed tickets.
         for number in db.closedtickets():

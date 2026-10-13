@@ -22,7 +22,13 @@ Règles de la maison :
 """
 from __future__ import annotations
 
+import inspect
+import json
+import logging
+
 import discord
+
+log = logging.getLogger(__name__)
 
 # ── Palette (une couleur par intention) ──────────────────────────────────────
 ACCENT_BRAND   = 0x1E90FF   # bleu océan — commandes générales, tickets
@@ -63,6 +69,119 @@ def clip(text: str, limit: int = MAX_TEXT) -> str:
 
 # ── Carte ────────────────────────────────────────────────────────────────────
 
+# Types autorisés comme enfants d'un container (components v2). Un bouton ou
+# un menu doit passer par une Action Row (type 1) : sinon Discord refuse le
+# message avec un 400 Invalid Form Body.
+CONTAINER_CHILD_TYPES = {1, 9, 10, 11, 12, 13, 14, 17}
+ROW_CHILD_TYPES = {2, 3, 4, 5, 6, 7, 8}   # boutons et menus (dans une rangée)
+NON_ROW_ITEMS = (discord.ui.Button, discord.ui.Select)
+
+
+def wrap_items(elements, *, per_row: int = 5) -> list[discord.ui.ActionRow]:
+    """Range des items dans des Action Rows valides.
+
+    - les menus (selects) occupent leur propre rangée (Discord l'impose) ;
+    - les boutons sont groupés par ``per_row`` (5 maximum).
+    """
+    rows: list[discord.ui.ActionRow] = []
+    current: discord.ui.ActionRow | None = None
+
+    for element in elements:
+        if isinstance(element, discord.ui.Select):
+            rows.append(discord.ui.ActionRow(element))
+            current = None
+            continue
+        if not isinstance(element, discord.ui.Button):
+            if isinstance(element, discord.ui.ActionRow):
+                rows.append(element)
+            continue
+        if current is None or len(current.children) >= per_row:
+            current = discord.ui.ActionRow()
+            rows.append(current)
+        current.add_item(element)
+    return [row for row in rows if row.children]
+
+
+def to_items(children) -> list[discord.ui.Item]:
+    """Récupère les items dispatchables d'une vue (boutons, menus)."""
+    items: list[discord.ui.Item] = []
+    for child in children:
+        if isinstance(child, NON_ROW_ITEMS):
+            items.append(child)
+        elif hasattr(child, "children"):
+            items.extend(to_items(child.children))
+    return items
+
+
+def loose_items(view) -> list[str]:
+    """Items (boutons/menus) pas rangés dans une Action Row — interdit.
+
+    ``Card`` les range automatiquement avant l'envoi (filet de sécurité), donc
+    ce contrôle sert surtout aux tests : il faut corriger la source, pas
+    seulement masquer le problème.
+    """
+    found: list[str] = []
+
+    def walk(container: discord.ui.Container, path: str) -> None:
+        for i, child in enumerate(container.children):
+            if isinstance(child, (discord.ui.Button, discord.ui.Select)):
+                found.append(f"{path}[{i}] {type(child).__name__}")
+            elif isinstance(child, discord.ui.Container):
+                walk(child, f"{path}[{i}]")
+
+    for i, child in enumerate(getattr(view, "children", [])):
+        if isinstance(child, discord.ui.Container):
+            walk(child, f"container[{i}]")
+    # items qui ont dû être rangés automatiquement à l'envoi : la source est à
+    # corriger (le rendu n'a pas planté grâce au filet de sécurité).
+    found.extend(f"{name} (rerangé automatiquement)" for name in
+                 getattr(view, "_loose_fixed", []))
+    return found
+
+
+def validate(view_or_payload) -> None:
+    """Vérifie la structure d'une carte avant envoi (règles Discord v2).
+
+    Lève ``ValueError`` avec un message précis : c'est ce qui permet d'attraper
+    en test un bouton mal rangé au lieu de le découvrir en production.
+    """
+    loose = loose_items(view_or_payload)
+    if loose:
+        raise ValueError(
+            "bouton/menu à nu dans un container (Discord refuse : 400 Invalid Form Body) : "
+            + ", ".join(loose) + " — utilise ui.Card.items()/row()."
+        )
+
+    blocks = (view_or_payload.to_components() if hasattr(view_or_payload, "to_components")
+              else view_or_payload.get("components", []) if isinstance(view_or_payload, dict)
+              else view_or_payload)
+
+    def walk(children: list[dict], where: str) -> None:
+        for i, child in enumerate(children or []):
+            kind = child.get("type")
+            if where == "container" and kind not in CONTAINER_CHILD_TYPES:
+                raise ValueError(
+                    f"components[{where}][{i}] : le type {kind} doit être rangé dans une "
+                    "Action Row (type 1) — utilise ui.Card.items()/row()."
+                )
+            if kind == 1:
+                row_children = child.get("components") or []
+                if not row_children:
+                    raise ValueError(f"components[{where}][{i}] : Action Row vide.")
+                for j, comp in enumerate(row_children):
+                    if comp.get("type") not in ROW_CHILD_TYPES:
+                        raise ValueError(
+                            f"components[{where}][{i}].components[{j}] : le type "
+                            f"{comp.get('type')} n'a rien à faire dans une Action Row."
+                        )
+                continue        # le contenu d'une rangée a ses propres règles
+            if kind == 10 and not (child.get("content") or "").strip():
+                raise ValueError(f"components[{where}][{i}] : bloc de texte vide.")
+            if kind in (9, 17):
+                walk(child.get("components"), "container" if kind == 17 else where)
+
+    walk(blocks, "message")
+
 class Card(discord.ui.LayoutView):
     """Carte à accent coloré : sections, séparateurs, boutons, pied de page.
 
@@ -80,6 +199,7 @@ class Card(discord.ui.LayoutView):
     ):
         super().__init__(timeout=timeout)
         self._accent = accent
+        self._loose_fixed: list[str] = []   # items rerangés automatiquement
         self.container = discord.ui.Container(accent_colour=discord.Colour(accent))
         self.add_item(self.container)
         if title:
@@ -140,6 +260,18 @@ class Card(discord.ui.LayoutView):
         self.container.add_item(action_row)
         return self
 
+    def items(self, *elements: discord.ui.Item, per_row: int = 5) -> "Card":
+        """Ajoute des items (boutons, menus, sélecteurs) **dans des rangées**.
+
+        Indispensable : un bouton ou un menu posé directement dans un container
+        (sans Action Row) est refusé par Discord (400 Invalid Form Body). Cette
+        méthode range les menus chacun sur leur propre rangée et les boutons
+        par paquets de ``per_row``.
+        """
+        for action_row in wrap_items(elements, per_row=per_row):
+            self.container.add_item(action_row)
+        return self
+
     def button(
         self,
         label: str,
@@ -155,6 +287,8 @@ class Card(discord.ui.LayoutView):
 
         ``callback`` rend le bouton interactif ; sinon on utilise ``custom_id``
         (permet de le rattraper par une vue persistante déjà enregistrée).
+        Le callback peut accepter ``(interaction)`` — la convention de
+        discord.py — ou ``(interaction, button)`` : les deux marchent.
         """
         if url:
             button = discord.ui.Button(label=clip(label, 80), style=discord.ButtonStyle.link,
@@ -165,7 +299,16 @@ class Card(discord.ui.LayoutView):
                 custom_id=custom_id, disabled=disabled,
             )
             if callback is not None:
-                button.callback = callback
+                # discord.py appelle les callbacks avec le seul argument
+                # ``interaction`` : on adapte ceux qui attendent le bouton.
+                params = [p for p in inspect.signature(callback).parameters.values()
+                          if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+                if len(params) >= 2:
+                    async def _wrapped(interaction, _cb=callback, _btn=button):
+                        await _cb(interaction, _btn)
+                    button.callback = _wrapped
+                else:
+                    button.callback = callback
         return self.row(button)
 
     def links(self, *entries: tuple[str, str, str | None]) -> "Card":
@@ -184,6 +327,50 @@ class Card(discord.ui.LayoutView):
         return self.text(f"-# {clip(content, 1000)}")
 
     # ── Sortie ──
+    def _normalize_rows(self) -> None:
+        """Range les items à nu (boutons, menus) dans des Action Rows.
+
+        Filet de sécurité : Discord refuse un message dont un bouton ou un menu
+        est posé directement dans un container (400 Invalid Form Body). Même si
+        un appelant les ajoute sans rangée, le payload partira valide.
+        """
+        def fix(container: discord.ui.Container) -> None:
+            children = list(container.children)
+            has_container = any(isinstance(c, discord.ui.Container) for c in children)
+            loose = any(isinstance(c, (discord.ui.Button, discord.ui.Select))
+                        for c in children)
+            if loose:
+                # Trace du rangement automatique : les tests s'en servent pour
+                # signaler le code fautif à la source.
+                self._loose_fixed.extend(
+                    type(c).__name__ for c in children
+                    if isinstance(c, (discord.ui.Button, discord.ui.Select))
+                )
+            if has_container:
+                for child in children:
+                    if isinstance(child, discord.ui.Container):
+                        fix(child)
+            if not loose:
+                return
+            container.clear_items()
+            pending: list[discord.ui.Item] = []
+            for child in children:
+                if isinstance(child, (discord.ui.Button, discord.ui.Select)):
+                    pending.append(child)
+                    continue
+                for action_row in wrap_items(pending):
+                    container.add_item(action_row)
+                pending = []
+                container.add_item(child)
+            for action_row in wrap_items(pending):
+                container.add_item(action_row)
+
+        fix(self.container)
+
+    def to_components(self):
+        self._normalize_rows()
+        return super().to_components()
+
     def payload(self) -> dict:
         """Payload brut, pour ``utils.api.api_send`` (file d'attente, logs…)."""
         return {"flags": 32768, "components": self.to_components()}
@@ -267,14 +454,37 @@ async def send(
                                                    allowed_mentions=allowed)
         return await interaction.response.send_message(view=view, ephemeral=ephemeral,
                                                        allowed_mentions=allowed)
-    except discord.HTTPException:
-        # Une carte refusée (mise en forme limite) ne doit pas laisser
-        # l'utilisateur devant « Interaction failed ».
+    except discord.HTTPException as exc:
+        # Une carte refusée ne doit pas laisser l'utilisateur devant
+        # « Interaction failed » — mais l'erreur réelle est tracée, sinon
+        # impossible de savoir ce que Discord n'a pas aimé.
+        log.error(
+            "carte refusée par Discord pour /%s : %s %s — %s",
+            getattr(getattr(interaction, "command", None), "qualified_name", "?"),
+            getattr(exc, "status", "?"), getattr(exc, "code", "?"),
+            (getattr(exc, "text", "") or str(exc))[:500],
+        )
+        try:
+            log.error("payload refusé : %s", json.dumps(
+                view.payload() if isinstance(view, Card) else view.to_components()
+            )[:1500])
+        except Exception:
+            pass
+
         fallback = error_card("❌ Couldn't render that",
                               "The reply could not be displayed. Try again in a moment.")
-        if interaction.response.is_done():
-            return await interaction.followup.send(view=fallback, ephemeral=True)
-        return await interaction.response.send_message(view=fallback, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                return await interaction.followup.send(view=fallback, ephemeral=True)
+            return await interaction.response.send_message(view=fallback, ephemeral=True)
+        except discord.HTTPException:
+            # L'accusé de réception n'est plus possible (interaction déjà
+            # répondue, canal fermé…) : on tente le followup, seul recours.
+            try:
+                return await interaction.followup.send(view=fallback, ephemeral=True)
+            except discord.HTTPException:
+                log.error("repli impossible : l'interaction n'est plus valide")
+                return None
 
 
 async def edit(

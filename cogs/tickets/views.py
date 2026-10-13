@@ -83,35 +83,67 @@ class CloseTicketView(discord.ui.View):
         custom_id="close_ticket",
     )
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Ask for the close reason before closing.
-        # Raison de fermeture : petite carte avec les boutons de motif.
-        reason_card = ui.Card("## 🔒 Closing the ticket", accent=ui.ACCENT_WARN)
-        reason_card.text("Pick a reason — it helps us keep the logs meaningful.")
-        for item in CloseReasonView().children:
-            reason_card.container.add_item(item)
-        reason_card.footer(f"Close requested by {interaction.user.display_name}")
-        await ui.send(interaction, reason_card, ephemeral=True)
+        await ui.send(interaction, build_close_reason_card(interaction), ephemeral=True)
 
 
-class CloseReasonView(discord.ui.View):
+CLOSE_REASON_OPTIONS = [
+    discord.SelectOption(label="✅ Resolved",  value="resolved",
+                         description="Issue resolved"),
+    discord.SelectOption(label="⏳ Abandoned", value="abandoned",
+                         description="User abandoned / no response"),
+    discord.SelectOption(label="📄 Duplicate", value="duplicate",
+                         description="Duplicate of another ticket"),
+]
+
+# custom_id fixe : le menu reste utilisable après un redémarrage du bot (la vue
+# persistante ci-dessous est réenregistrée au démarrage).
+CLOSE_REASON_SELECT_ID = "ticket_close_reason"
+
+
+async def _on_close_reason(interaction: discord.Interaction, reason: str):
+    """Motif choisi → on ferme le ticket (transcript + suppression du salon)."""
+    await interaction.response.defer(ephemeral=True)
+    from .core import _do_close_ticket  # import local : évite la circularité
+    # On transmet l'interaction : _do_close_ticket répond via followup, sinon
+    # l'éphémère « réfléchit… » restait bloqué pour l'utilisateur.
+    await _do_close_ticket(interaction.channel, interaction.user, interaction, reason=reason)
+
+
+class CloseReasonSelectView(discord.ui.View):
+    """Menu de motif de fermeture (vue persistante, custom_id fixe).
+
+    Les items de cette vue sont réutilisés dans la carte (``build_close_reason_card``),
+    donc le clic est routé aussi bien par le message que par la vue persistante.
+    """
+
     def __init__(self):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
 
     @discord.ui.select(
         placeholder="Select a close reason…",
-        options=[
-            discord.SelectOption(label="✅ Resolved",  value="resolved",  description="Issue resolved"),
-            discord.SelectOption(label="⏳ Abandoned", value="abandoned", description="User abandoned / no response"),
-            discord.SelectOption(label="📄 Duplicate", value="duplicate", description="Duplicate of another ticket"),
-        ],
+        custom_id=CLOSE_REASON_SELECT_ID,
+        options=list(CLOSE_REASON_OPTIONS),
     )
     async def reason_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        reason = select.values[0]
-        await interaction.response.defer(ephemeral=True)
-        from .core import _do_close_ticket  # local import to avoid circularity
-        # On transmet l'interaction : _do_close_ticket répond via followup, sinon
-        # l'éphémère "réfléchit…" restait bloqué pour l'utilisateur.
-        await _do_close_ticket(interaction.channel, interaction.user, interaction, reason=reason)
+        values = getattr(select, "values", None) or []
+        await _on_close_reason(interaction, values[0] if values else "resolved")
+
+
+def build_close_reason_card(interaction: discord.Interaction) -> ui.Card:
+    """Carte « pourquoi fermer ? » avec le menu rangé dans une Action Row.
+
+    ⚠️ Deux pièges corrigés ici :
+    * un menu posé directement dans un container est refusé par Discord
+      (400 Invalid Form Body) → « Couldn't render that » ;
+    * un callback assigné à la main sur un item est appelé par discord.py avec
+      le seul argument ``interaction`` → on réutilise les items de la vue
+      persistante, dont le binding est fait par discord.py.
+    """
+    card = ui.Card("## 🔒 Closing the ticket", accent=ui.ACCENT_WARN)
+    card.text("Pick a reason — it helps us keep the logs meaningful.")
+    card.items(*ui.to_items(CloseReasonSelectView().children))
+    card.footer(f"Close requested by {interaction.user.display_name}")
+    return card
 
 
 class ReopenView(discord.ui.View):

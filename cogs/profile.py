@@ -343,8 +343,9 @@ class ReviewStep1(discord.ui.Modal, title="Review — Step 1 / 2"):
         )
         step2.divider(spacing=1)
         step2.footer(f"Project: {self.project.value} · {stars}⭐")
-        for item in view.children:          # mêmes boutons/menu que la vue d'origine
-            step2.container.add_item(item)
+        # ui.items() range le menu (et les boutons) dans des Action Rows :
+        # sans ça, Discord refuse le message.
+        step2.items(*ui.to_items(view.children))
         await ui.send(interaction, step2, ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
@@ -430,7 +431,7 @@ class ReviewStep2View(discord.ui.View):
         done.timeout = None
         for item in self.children:
             item.disabled = True
-            done.container.add_item(item)
+        done.items(*ui.to_items(self.children))
         await ui.edit(interaction, done)
 
 

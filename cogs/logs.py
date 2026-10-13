@@ -1399,8 +1399,8 @@ class Logs(commands.Cog):
                 "The current log channels will be **deleted** (history included) and "
                 "created again — past events can't be recovered.",
             )
-            for item in confirm.children:
-                card.container.add_item(item)
+            # ui.items() : les boutons sont rangés dans une Action Row (obligatoire).
+            card.items(*ui.to_items(confirm.children))
             card.footer(f"Confirmation requested by {interaction.user.display_name}")
             await ui.send(interaction, card, ephemeral=True)
             return
